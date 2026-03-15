@@ -377,6 +377,7 @@ const LegoDb = {
     // setData doit avoir un champ set_num
     await idbPut("sets_cache", {
       ...setData,
+      set_num:    setData.set_num || setData.number || "", 
       _cached_at: new Date().toISOString(),
     });
   },

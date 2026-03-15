@@ -9,214 +9,96 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
 
 <script src="unified-data-manager.js"></script>
-
 <script type="module">
   import LocalStorageManager from './auth.js';
-  
-  let storageManager = null;
-  let unifiedManager = null;
-  let UnifiedStorageManager = null; // Déclarer globalement
-  
+
   document.addEventListener('DOMContentLoaded', async function() {
-    // Initialiser le gestionnaire unifié
-    unifiedManager = new UnifiedDataManager();
-    await unifiedManager.loadUnifiedData();
-    
-    // Définir la classe UnifiedStorageManager
-    UnifiedStorageManager = class extends LocalStorageManager {
-      constructor(container, unifiedManager) {
+    // UnifiedDataManager est déjà chargé et initialisé par unified-data-manager.js
+    // Pas besoin de new UnifiedDataManager() ni de loadUnifiedData()
+
+    class UnifiedStorageManager extends LocalStorageManager {
+      constructor(container) {
         super(container);
-        this.unifiedManager = unifiedManager;
       }
 
       exportToFile() {
-        if (this.unifiedManager) {
-          this.unifiedManager.exportData();
-        } else {
-          // Fallback si le gestionnaire n'est pas disponible
-          try {
-            const dataString = localStorage.getItem('lego_unified_data_v2');
-            const data = dataString ? JSON.parse(dataString) : {};
-            const jsonData = JSON.stringify(data, null, 2);
-            const blob = new Blob([jsonData], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `lego_backup_${new Date().toISOString().slice(0, 10)}.json`;
-            a.click();
-            URL.revokeObjectURL(url);
-          } catch (error) {
-            console.error('Erreur export fallback:', error);
-            alert('Erreur lors de l\'export des données');
-          }
+        try {
+          const json = UnifiedDataManager.exportData();
+          const blob = new Blob([json], { type: 'application/json' });
+          const url  = URL.createObjectURL(blob);
+          const a    = document.createElement('a');
+          a.href     = url;
+          a.download = `lego_backup_${new Date().toISOString().slice(0, 10)}.json`;
+          a.click();
+          URL.revokeObjectURL(url);
+        } catch (error) {
+          console.error('Erreur export:', error);
+          alert('Erreur lors de l\'export des données');
         }
       }
 
       async importFromFile(event) {
         const file = event.target.files[0];
         if (!file) return;
-
         try {
           const text = await file.text();
-          
           if (confirm('Voulez-vous vraiment importer ces données ? Cela remplacera vos données actuelles.')) {
-            if (this.unifiedManager) {
-              await this.unifiedManager.importData(text);
-            } else {
-              // Fallback
-              const data = JSON.parse(text);
-              localStorage.setItem('lego_unified_data_v2', JSON.stringify(data));
-            }
+            UnifiedDataManager.importData(text);
             alert('Données importées avec succès ! Rechargez la page pour voir les changements.');
           }
         } catch (error) {
           console.error('Erreur lors de l\'import:', error);
           alert('Erreur lors de l\'import : fichier invalide');
         }
-        
         event.target.value = '';
       }
-    };
+    }
 
-    initializePage();
-  });
-      
-  function initializePage() {
-    console.log('Initializing page...');
-    
-    // Handle API key section
-    initAPISection();
-    
-    // Handle local storage management
-    initStorageSection();
-    
-    // Charger les paramètres sauvegardés
-    updateUIFromStoredData();
-  }
-  
-  // ================================
-  // GESTION DU STOCKAGE LOCAL
-  // ================================
-  
-  function initStorageSection() {
+    // Initialiser la section stockage
     const storageContainer = document.getElementById('storage-container');
-    if (storageContainer && UnifiedStorageManager) {
-      storageManager = new UnifiedStorageManager(storageContainer, unifiedManager);
-    } else if (!storageContainer) {
-      console.log('Storage container not found, creating it...');
-      createStorageSection();
+    if (storageContainer) {
+      new UnifiedStorageManager(storageContainer);
     }
-  }
-  
-  function createStorageSection() {
-    const container = document.querySelector('.container');
-    if (!container) return;
-  
-    const storageSection = document.createElement('div');
-    storageSection.className = 'storage-section';
-    storageSection.innerHTML = `
-      <h3>Sauvegarde & Export</h3>
-      <div id="storage-container"></div>
-    `;
-    
-    const apiSection = document.querySelector('.api-section');
-    if (apiSection) {
-      container.insertBefore(storageSection, apiSection.nextSibling);
-    } else {
-      container.appendChild(storageSection);
-    }
-    
-    setTimeout(() => initStorageSection(), 100);
-  }
-  
-  // ================================
-  // GESTION DE LA CLÉ API
-  // ================================
-  
-  function initAPISection() {
-    const apiKeyInput = document.getElementById('api-key');
-    const apiStatus = document.getElementById('api-status');
-    
-    if (apiKeyInput && apiStatus) {
-      updateUIFromStoredData();
-    } else {
-      console.log('API elements not found, creating them...');
-      createAPISection();
-    }
-  }
-  
-  function createAPISection() {
-    const container = document.querySelector('.container');
-    if (!container) return;
-  
-    const apiSection = document.createElement('div');
-    apiSection.className = 'api-section';
-    apiSection.innerHTML = `
-      <h3>Clé API Rebrickable</h3>
-      <div id="api-status" class="status status-disconnected">Non configurée</div>
-      <input type="text" id="api-key" placeholder="Entrez votre clé API Rebrickable">
-      <button class="btn btn-api" onclick="saveApiKey()">Enregistrer la clé API</button>
-    `;
-    
-    container.insertBefore(apiSection, container.firstChild.nextSibling);
-    initAPISection();
-  }
-  
+
+    // Initialiser la section API
+    updateUIFromStoredData();
+  });
+
   function updateUIFromStoredData() {
     const apiKeyInput = document.getElementById('api-key');
-    const apiStatus = document.getElementById('api-status');
-    
+    const apiStatus   = document.getElementById('api-status');
     if (apiKeyInput && apiStatus) {
-      const savedApiKey = localStorage.getItem('rebrickable_api_key');
+      const savedApiKey = UnifiedDataManager.getApiKey();
       if (savedApiKey) {
-        apiKeyInput.value = savedApiKey;
+        apiKeyInput.value    = savedApiKey;
         apiStatus.textContent = 'Configurée';
-        apiStatus.className = 'status status-connected';
+        apiStatus.className   = 'status status-connected';
       }
     }
   }
-  
-  async function saveApiKey() {
+
+  function saveApiKey() {
     const apiKeyInput = document.getElementById('api-key');
-    const apiStatus = document.getElementById('api-status');
-    
+    const apiStatus   = document.getElementById('api-status');
     if (!apiKeyInput || !apiStatus) {
       alert('Erreur: éléments d\'interface non trouvés');
       return;
     }
-    
     const apiKey = apiKeyInput.value.trim();
     if (apiKey) {
-      localStorage.setItem('rebrickable_api_key', apiKey);
+      UnifiedDataManager.setApiKey(apiKey);
       apiStatus.textContent = 'Configurée';
-      apiStatus.className = 'status status-connected';
+      apiStatus.className   = 'status status-connected';
       alert('Clé API enregistrée avec succès!');
     } else {
       alert('Veuillez entrer une clé API valide');
     }
   }
-  
-  // ================================
-  // NAVIGATION
-  // ================================
-  
-  function goToBulkParts() {
-    window.location.href = 'app.html';
-  }
-  
-  function goToSets() {
-    window.location.href = 'sets.html';
-  }
-  
-  function goToFileManager() {
-    window.location.href = 'index.html';
-  }
-  
-  // Exposer les fonctions globalement
-  window.saveApiKey = saveApiKey;
-  window.goToBulkParts = goToBulkParts;
-  window.goToSets = goToSets;
-  window.goToFileManager = goToFileManager;
+
+  window.saveApiKey     = saveApiKey;
+  window.goToBulkParts  = () => { window.location.href = 'app.html'; };
+  window.goToSets       = () => { window.location.href = 'sets.html'; };
+  window.goToFileManager = () => { window.location.href = 'index.html'; };
 </script>
 
   <style>

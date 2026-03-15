@@ -1,18 +1,16 @@
 /**
  * unified-data-manager.js  —  Global Bricks Manager
  * Gestion centralisée des données utilisateur (inventaire + sets).
- * v2.1 — ajout du cache API sets via LegoDb.setCachedSet
+ * v2.2 — corrections paramètres updateInventory, ajout scheduleSave, getApiKey statique
  */
 
 const STORAGE_KEY    = "gbm_unified_v2";
-const STORAGE_KEY_V1 = "lego_personal_inventory"; // legacy
-const STORAGE_KEY_S1 = "lego_sets_data";          // legacy
-
-// ── Format interne ────────────────────────────────────────────────────────────
+const STORAGE_KEY_V1 = "lego_personal_inventory";
+const STORAGE_KEY_S1 = "lego_sets_data";
 
 function emptyData() {
   return {
-    version:   "2.1",
+    version:   "2.2",
     timestamp: new Date().toISOString(),
     user: {
       preferences: {
@@ -21,24 +19,21 @@ function emptyData() {
         apiKey:   "",
       },
     },
-    inventory: [],  // [{ part_num, color_id, color_name, quantity, category }]
-    sets:      [],  // [{ number, name, year, num_parts, img_url, parts: [...] }]
+    inventory: [],
+    sets:      [],
   };
 }
-
-// ── Chargement / sauvegarde ───────────────────────────────────────────────────
 
 function loadUnifiedData() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw) {
     try {
       const data = JSON.parse(raw);
-      return migrateTo21(data);
+      return migrateTo22(data);
     } catch (e) {
       console.error("[UDM] Données corrompues, reset", e);
     }
   }
-  // Migration depuis anciens formats
   const migrated = migrateFromLegacy();
   if (migrated) return migrated;
   return emptyData();
@@ -51,18 +46,14 @@ function saveUnifiedData(data) {
   } catch (e) {
     if (e.name === "QuotaExceededError") {
       console.error("[UDM] localStorage plein !");
-      // TODO : proposer un export avant d'écraser
     }
     throw e;
   }
 }
 
-// ── Migration v2.0 → v2.1 ────────────────────────────────────────────────────
-
-function migrateTo21(data) {
-  if (data.version === "2.1") return data;
-  data.version = "2.1";
-  // S'assurer que les sets ont les nouveaux champs
+function migrateTo22(data) {
+  if (data.version === "2.2") return data;
+  data.version = "2.2";
   (data.sets || []).forEach(s => {
     if (!s.year)      s.year      = 0;
     if (!s.img_url)   s.img_url   = "";
@@ -70,8 +61,6 @@ function migrateTo21(data) {
   });
   return data;
 }
-
-// ── Migration depuis anciens formats (v1) ────────────────────────────────────
 
 function migrateFromLegacy() {
   const rawInv  = localStorage.getItem(STORAGE_KEY_V1);
@@ -115,22 +104,25 @@ function migrateFromLegacy() {
     } catch (e) { console.warn("[UDM] Migration sets échouée", e); }
   }
   saveUnifiedData(data);
-  // Nettoyage des anciennes clés
   localStorage.removeItem(STORAGE_KEY_V1);
   localStorage.removeItem(STORAGE_KEY_S1);
   console.log("[UDM] Migration legacy effectuée");
   return data;
 }
 
-// ── API publique ──────────────────────────────────────────────────────────────
-
 const UnifiedDataManager = {
 
   _data: null,
+  _saveTimer: null,
 
   load() {
     this._data = loadUnifiedData();
     return this._data;
+  },
+
+  // Alias pour compatibilité avec app.html (appelé comme méthode d'instance)
+  loadUnifiedData() {
+    return Promise.resolve(this.load());
   },
 
   save() {
@@ -138,9 +130,28 @@ const UnifiedDataManager = {
     saveUnifiedData(this._data);
   },
 
+  // Alias pour compatibilité avec app.html
+  saveUnifiedData() {
+    return Promise.resolve(this.save());
+  },
+
+  // Sauvegarde différée (debounce 500ms) — évite les sauvegardes trop fréquentes
+  scheduleSave() {
+    if (this._saveTimer) clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => {
+      this.save();
+      this._saveTimer = null;
+    }, 500);
+  },
+
   get data() {
     if (!this._data) this.load();
     return this._data;
+  },
+
+  // Compatibilité avec app.html qui accède à .currentData
+  get currentData() {
+    return this.data;
   },
 
   // ── Préférences ────────────────────────────────────────────────────────────
@@ -154,12 +165,17 @@ const UnifiedDataManager = {
     this.save();
   },
 
+  // Méthode d'instance
   getApiKey() {
-    return this.data.user.preferences.apiKey || "";
+    return this.data.user.preferences.apiKey
+      || localStorage.getItem("rebrickable_api_key")
+      || "";
   },
 
+  // Méthode statique (pour sets.html qui l'appelle en UnifiedDataManager.getApiKey())
   setApiKey(key) {
     this.data.user.preferences.apiKey = key;
+    localStorage.setItem("rebrickable_api_key", key);
     this.save();
   },
 
@@ -172,6 +188,8 @@ const UnifiedDataManager = {
     return item ? item.quantity : 0;
   },
 
+  // Ordre unifié : (partNum, colorId, quantity, colorName, category)
+  // app.html appelait (partNum, colorId, colorName, quantity, category) — corrigé côté app.html
   updateInventory(partNum, colorId, quantity, colorName = "", category = "") {
     const idx = this.data.inventory.findIndex(
       i => i.part_num === partNum && i.color_id === parseInt(colorId)
@@ -179,7 +197,13 @@ const UnifiedDataManager = {
     if (quantity <= 0) {
       if (idx >= 0) this.data.inventory.splice(idx, 1);
     } else {
-      const item = { part_num: partNum, color_id: parseInt(colorId), color_name: colorName, quantity, category };
+      const item = {
+        part_num:   partNum,
+        color_id:   parseInt(colorId),
+        color_name: colorName,
+        quantity,
+        category,
+      };
       if (idx >= 0) this.data.inventory[idx] = item;
       else          this.data.inventory.push(item);
     }
@@ -200,11 +224,6 @@ const UnifiedDataManager = {
     return this.data.sets.find(s => s.number === setNumber) || null;
   },
 
-  /**
-   * Ajoute ou remplace un set complet.
-   * setData doit avoir : { number, name, year, num_parts, img_url, parts[] }
-   * Sauvegarde aussi en cache IndexedDB via LegoDb (si disponible).
-   */
   async saveSet(setData) {
     const idx = this.data.sets.findIndex(s => s.number === setData.number);
     const normalized = {
@@ -229,7 +248,6 @@ const UnifiedDataManager = {
     else          this.data.sets.push(normalized);
     this.save();
 
-    // Cache IndexedDB
     if (window.LegoDb) {
       await LegoDb.setCachedSet(normalized).catch(e =>
         console.warn("[UDM] Cache IndexedDB set échoué", e)
@@ -278,14 +296,12 @@ const UnifiedDataManager = {
     const available = this.getInventoryQuantity(partNum, colorIdInt);
     if (available < transfer) return { success: false, error: "Inventaire insuffisant" };
 
-    // Déduire de l'inventaire
     this.updateInventory(
       partNum, colorIdInt,
       available - transfer,
       part.color_name || "",
       ""
     );
-    // Créditer dans le set
     part.quantity_owned += transfer;
     this.save();
     return { success: true, transferred: transfer };
@@ -319,8 +335,8 @@ const UnifiedDataManager = {
   // ── Stats ──────────────────────────────────────────────────────────────────
 
   getStats() {
-    const sets        = this.data.sets;
-    const inventory   = this.data.inventory;
+    const sets      = this.data.sets;
+    const inventory = this.data.inventory;
     const completeSets = sets.filter(s => {
       if (!s.parts.length) return false;
       return s.parts.every(p => p.quantity_owned >= p.quantity);
@@ -328,10 +344,10 @@ const UnifiedDataManager = {
     const totalOwnedParts = inventory.reduce((sum, i) => sum + i.quantity, 0);
 
     return {
-      totalSets:        sets.length,
-      completeSets:     completeSets.length,
-      incompleteSets:   sets.length - completeSets.length,
-      totalInventory:   inventory.length,
+      totalSets:      sets.length,
+      completeSets:   completeSets.length,
+      incompleteSets: sets.length - completeSets.length,
+      totalInventory: inventory.length,
       totalOwnedParts,
     };
   },
@@ -349,16 +365,34 @@ const UnifiedDataManager = {
     } catch (e) {
       throw new Error("JSON invalide : " + e.message);
     }
-    // Validation minimale
     if (!parsed.inventory || !parsed.sets) {
       throw new Error("Format non reconnu (clés inventory et sets requises)");
     }
-    this._data = migrateTo21(parsed);
+    this._data = migrateTo22(parsed);
     this.save();
     return this._data;
   },
 };
 
-// Chargement au démarrage
+// Méthode statique sur le constructeur (pour sets.html : UnifiedDataManager.getApiKey())
+UnifiedDataManager.getApiKey = function() {
+  return UnifiedDataManager.getApiKey
+    ? (UnifiedDataManager._data?.user?.preferences?.apiKey
+       || localStorage.getItem("rebrickable_api_key")
+       || "")
+    : "";
+};
+// Réécrire proprement pour éviter la récursion
+Object.defineProperty(UnifiedDataManager, 'getApiKey', {
+  value: function() {
+    const data = UnifiedDataManager._data;
+    return (data?.user?.preferences?.apiKey)
+      || localStorage.getItem("rebrickable_api_key")
+      || "";
+  },
+  writable: true,
+  configurable: true,
+});
+
 UnifiedDataManager.load();
 window.UnifiedDataManager = UnifiedDataManager;

@@ -19,59 +19,102 @@
 
 
   <script>
-    // Cache d'images
-    let db = null;
-    let personalInventory = null;
-    let allParts = [];
-    let filteredParts = [];
-    let currentCategory = null;
-    let currentPage = 1;
-    let totalPages = 1;
-    let activeFilters = [];
-    let printFilter = 'no-print';
-    let temporaryFilters = []; // Filtres de recherche temporaires
-    let globalSearchResults = null; // Résultats de recherche globale
-    let csvWorker = null;
-    let unifiedDataManager = null;  // NOUVEAU
+// ── Cache d'images ──────────────────────────────────────────────────────────
+const imageCache = new Map();
+if (!window.setImageCache) window.setImageCache = new Map();
 
-// Créer ou réutiliser le cache d'images des sets
-if (!window.setImageCache) {
-  window.setImageCache = new Map();
+// ── Fichiers requis dans IndexedDB ──────────────────────────────────────────
+const REQUIRED_FILES = {
+  parts:           true,
+  part_categories: true,
+  colors:          true,
+  inventory_parts: true,
+};
+
+// ── État de l'application ───────────────────────────────────────────────────
+let personalInventory = null;
+let allParts          = [];
+let filteredParts     = [];
+let currentCategory   = null;
+let currentPage       = 1;
+let totalPages        = 1;
+let activeFilters     = [];
+let printFilter       = 'no-print';
+let temporaryFilters  = [];
+let globalSearchResults = null;
+
+// ── Adaptateur db → LegoDb ──────────────────────────────────────────────────
+function idbGetAllDirect(storeName) {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('LegoBricksDB');
+    req.onsuccess = (e) => {
+      const idb  = e.target.result;
+      const tx   = idb.transaction(storeName, 'readonly');
+      const req2 = tx.objectStore(storeName).getAll();
+      req2.onsuccess = () => resolve(req2.result);
+      req2.onerror   = () => reject(req2.error);
+    };
+    req.onerror = () => reject(req.error);
+  });
 }
 
-    // Initialisation de l'application
-    window.onload = async function() {
-      console.log('Initialisation de l\'application...');
-      
-      try {
-        // Initialiser la base de données
-        db = new LegoDatabase();
-        await db.init();
-        await db.verifyAndRepairStores();
+const db = {
+  async getData(storeName) {
+    switch (storeName) {
+      case 'parts':           return await LegoDb.getAllParts();
+      case 'part_categories': return await LegoDb.getAllCategories();
+      case 'colors':          return await LegoDb.getAllColors();
+      case 'inventory_parts': return await idbGetAllDirect('inventory_parts');
+      default:                return [];
+    }
+  },
+  async getDataByIndex(storeName, indexName, value) {
+    if (storeName === 'parts' && indexName === 'part_cat_id')
+      return await LegoDb.getPartsByCategory(parseInt(value));
+    if (storeName === 'inventory_parts' && indexName === 'part_num')
+      return await LegoDb.getInventoryPartsByPartNum(value);
+    if (storeName === 'inventory_parts' && indexName === 'color_id')
+      return await LegoDb.getInventoryPartsByColorId(value);
+    return [];
+  },
+  async getMetadata(_key) { return null; },
+  async getTableCount(storeName) {
+    try { return (await this.getData(storeName)).length; }
+    catch (e) { return 0; }
+  },
+};
 
-        // NOUVEAU : Initialiser le gestionnaire de données unifié
-        unifiedDataManager = new UnifiedDataManager();
-        await unifiedDataManager.loadUnifiedData();    
+// ── Classe PersonalInventory (wrapper de compatibilité sur UnifiedDataManager) ─
+class PersonalInventoryV2 {
+  // getQuantity utilise color_id (entier), pas color_name
+  getQuantity(partNum, colorId) {
+    return UnifiedDataManager.getInventoryQuantity(partNum, parseInt(colorId));
+  }
+}
 
-        // Initialiser l'inventaire personnel
-        personalInventory = new PersonalInventoryV2(unifiedDataManager);
+// ── Init ────────────────────────────────────────────────────────────────────
+window.onload = async function() {
+  console.log('Initialisation de l\'application...');
+  try {
+    // UnifiedDataManager est déjà initialisé par unified-data-manager.js
+    // LegoDb est déjà disponible via lego-db.js
 
-        // Vérifier que les données sont présentes
-        const allFilesLoaded = await checkAllFilesLoaded();
-        if (!allFilesLoaded) {
-          showErrorInApp('Données manquantes. Veuillez retourner à la page d\'import pour charger les fichiers CSV.');
-          return;
-        }
-        
-        // Charger les données sauvegardées
-        
-        console.log('Application initialisée avec succès');
-        await initializeApp();
-      } catch (error) {
-        console.error('Erreur d\'initialisation:', error);
-        showErrorInApp(`Erreur d'initialisation: ${error.message}`);
-      }
-    };
+    // Vérifier que la base IndexedDB est prête
+    const ready = await LegoDb.isReady();
+    if (!ready) {
+      showErrorInApp('Données manquantes. Veuillez retourner à la page d\'import pour charger les fichiers CSV.');
+      return;
+    }
+
+    personalInventory = new PersonalInventoryV2();
+
+    console.log('Application initialisée avec succès');
+    await showCategories();
+  } catch (error) {
+    console.error('Erreur d\'initialisation:', error);
+    showErrorInApp(`Erreur d'initialisation: ${error.message}`);
+  }
+};
 
     async function checkAllFilesLoaded() {
       for (const fileKey of Object.keys(REQUIRED_FILES)) {
@@ -83,13 +126,9 @@ if (!window.setImageCache) {
 
     // Initialiser l'application
 async function initializeApp() {
-  if (unifiedDataManager && unifiedDataManager.sets) {
-    await Promise.all(
-      unifiedDataManager.sets.map(s => setManager.completePartsInfo(s))
-    );
-  }
   await showCategories();
 }
+
     // Afficher un message d'erreur dans l'app
     function showErrorInApp(message) {
       document.getElementById('app').innerHTML = `
@@ -238,21 +277,17 @@ async function initializeApp() {
     // Obtenir les pièces d'une catégorie depuis IndexedDB
 async function getLocalPartsByCategory(categoryId) {
   try {
-    const parts = await db.getDataByIndex('parts', 'part_cat_id', categoryId);
+    // S'assurer que l'id est bien un entier
+    const parts = await LegoDb.getPartsByCategory(parseInt(categoryId));
     
-    // Enrichir avec les compteurs de sets et trier
     const partsWithSetCount = await Promise.all(
-      parts.map(async (part) => {
-        const setCount = await db.getMetadata(`part_${part.part_num}_set_count`) || 0;
-        return {
-          ...part,
-          set_count: setCount
-        };
-      })
+      parts.map(async (part) => ({
+        ...part,
+        set_count: 0  // métadonnées non disponibles en v2, tri par défaut
+      }))
     );
     
-    // Trier par nombre de sets (décroissant)
-    return partsWithSetCount.sort((a, b) => b.set_count - a.set_count);
+    return partsWithSetCount;  // pas de tri par set_count puisque tout est à 0
   } catch (error) {
     console.error(`Erreur lors du chargement des pièces pour la catégorie ${categoryId}:`, error);
     return [];
@@ -401,31 +436,31 @@ async function checkIfPartIsMissingInSets(partNum, colorId) {
 
 // Modifier la fonction changeQuantity pour utiliser color_id
 async function changeQuantity(partNum, partName, categoryName, colorId, colorName, delta) {
-  const currentQty = unifiedDataManager.getInventoryQuantity(partNum, colorId);
-  const newQty = Math.max(0, currentQty + delta);
-  
-  // Utiliser directement le gestionnaire unifié
-  unifiedDataManager.updateInventory(partNum, colorId, colorName, newQty, categoryName);
-unifiedDataManager.scheduleSave();  
-  // Vérifier si cette pièce manque dans un set
+  const currentQty = UnifiedDataManager.getInventoryQuantity(partNum, colorId);
+  const newQty     = Math.max(0, currentQty + delta);
+
+  // Ordre correct : (partNum, colorId, quantity, colorName, category)
+  UnifiedDataManager.updateInventory(partNum, colorId, newQty, colorName, categoryName);
+  UnifiedDataManager.scheduleSave();
+
   if (delta > 0) {
     const missingSets = await checkIfPartIsMissingInSets(partNum, colorId);
     if (missingSets && missingSets.length > 0) {
-      const setsList = missingSets.map(s => `${s.setNumber} (${s.missingCount} manquant${s.missingCount > 1 ? 's' : ''})`).join(', ');
-      showToast(`Pièce manquante dans le${missingSets.length > 1 ? 's' : ''} set${missingSets.length > 1 ? 's' : ''}: ${setsList}. Vérifiez Mon inventaire`, 'warning', 6000);
+      const setsList = missingSets.map(s =>
+        `${s.setNumber} (${s.missingCount} manquant${s.missingCount > 1 ? 's' : ''})`
+      ).join(', ');
+      showToast(
+        `Pièce manquante dans le${missingSets.length > 1 ? 's' : ''} set${missingSets.length > 1 ? 's' : ''}: ${setsList}`,
+        'warning', 6000
+      );
     }
   }
-  
-  // Mettre à jour l'affichage
+
   const qtyElement = document.getElementById(`qty_${partNum}_${colorId}`);
-  if (qtyElement) {
-    qtyElement.textContent = newQty;
-  }
-  
+  if (qtyElement) qtyElement.textContent = newQty;
+
   const globalQtyElement = document.getElementById(`global_qty_${partNum}_${colorId}`);
-  if (globalQtyElement) {
-    globalQtyElement.textContent = newQty;
-  }
+  if (globalQtyElement) globalQtyElement.textContent = newQty;
 }
 
 // Fonction pour échapper les caractères HTML (IMPORTANT)
@@ -756,17 +791,12 @@ function filterParts(parts, filters, printFilterValue) {
 
 // Retour au menu principal
 function goToMenu() {
-  if (unifiedDataManager) {
-    unifiedDataManager.saveUnifiedData();
-  }
+  UnifiedDataManager.save();
   showCategories();
 }
 
-// Retour au menu principal (menu.html)
 function goToMainMenu() {
-  if (unifiedDataManager) {
-    unifiedDataManager.saveUnifiedData();
-  }
+  UnifiedDataManager.save();
   window.location.href = 'menu.html';
 }
 
@@ -953,7 +983,7 @@ img.src = imageUrl;
         <button onclick="changeQuantity('${part.part_num}', '${part.name}', '${currentCategory.name}', ${color.id}, '${color.name}', -1)"
                 style="background: #f44336; color: white; border: none; width: 30px; height: 30px; border-radius: 50%; cursor: pointer;">-</button>
         <span id="qty_${part.part_num}_${color.id}" style="min-width: 30px; text-align: center; font-weight: bold;">
-          ${personalInventory.getQuantity(part.part_num, color.name)}
+          ${personalInventory.getQuantity(part.part_num, color.id)}
         </span>
         <button onclick="changeQuantity('${part.part_num}', '${part.name}', '${currentCategory.name}', ${color.id}, '${color.name}', 1)"
                 style="background: #4caf50; color: white; border: none; width: 30px; height: 30px; border-radius: 50%; cursor: pointer;">+</button>
@@ -1221,7 +1251,7 @@ if (colorCountDiv) {
               <button onclick="changeQuantity('${part.part_num}', '${part.name}', '${category.name}', ${color.id}, '${color.name}', -1)"
                       style="background: #f44336; color: white; border: none; width: 30px; height: 30px; border-radius: 50%; cursor: pointer;">-</button>
               <span id="global_qty_${part.part_num}_${color.id}" style="min-width: 30px; text-align: center; font-weight: bold;">
-                ${personalInventory.getQuantity(part.part_num, color.name)}
+                ${personalInventory.getQuantity(part.part_num, color.id)}
               </span>
               <button onclick="changeQuantity('${part.part_num}', '${part.name}', '${category.name}', ${color.id}, '${color.name}', 1)"
                       style="background: #4caf50; color: white; border: none; width: 30px; height: 30px; border-radius: 50%; cursor: pointer;">+</button>
@@ -1529,7 +1559,7 @@ function showColorPopup(part, categoryName, colors) {
             <button onclick="changeQuantity('${part.part_num}', '${part.name}', '${categoryName}', ${color.id}, '${color.name}', -1)"
                     style="background: #f44336; color: white; border: none; width: 30px; height: 30px; border-radius: 50%; cursor: pointer;">-</button>
             <span id="qty_${part.part_num}_${color.id}" style="min-width: 30px; text-align: center; font-weight: bold;">
-              ${personalInventory.getQuantity(part.part_num, color.name)}
+              ${personalInventory.getQuantity(part.part_num, color.id)}
             </span>
             <button onclick="changeQuantity('${part.part_num}', '${part.name}', '${categoryName}', ${color.id}, '${color.name}', 1)"
                     style="background: #4caf50; color: white; border: none; width: 30px; height: 30px; border-radius: 50%; cursor: pointer;">+</button>
@@ -1567,42 +1597,33 @@ function closeColorPopup() {
 
 function getMissingPartsInfo() {
   const missingInfo = {};
-  
   try {
-    if (!unifiedDataManager || !unifiedDataManager.currentData.sets) return missingInfo;
-    
-    // Parcourir tous les sets du format unifié
-    for (const set of unifiedDataManager.currentData.sets) {
-      if (set.parts && Array.isArray(set.parts)) {
-        for (const part of set.parts) {
-          const quantityOwned = part.quantity_owned || 0;
-          if (quantityOwned < part.quantity) {
-            // Utiliser la structure unifiée
-            const key = `${part.part_num}_${part.color_id}`;
-            if (!missingInfo[key]) {
-              missingInfo[key] = {
-                partNum: part.part_num,
-                colorId: part.color_id,
-                colorName: part.color_name || 'Couleur inconnue',
-                sets: []
-              };
-            }
-            
-            missingInfo[key].sets.push({
-              setNumber: set.number,
-              setName: set.name,
-              needed: part.quantity,
-              owned: quantityOwned,
-              missing: part.quantity - quantityOwned
-            });
+    const sets = UnifiedDataManager.getSets();
+    for (const set of sets) {
+      if (!set.parts) continue;
+      for (const part of set.parts) {
+        const owned = part.quantity_owned || 0;
+        if (owned < part.quantity) {
+          const key = `${part.part_num}_${part.color_id}`;
+          if (!missingInfo[key]) {
+            missingInfo[key] = {
+              partNum:   part.part_num,
+              colorId:   part.color_id,
+              colorName: part.color_name || '',
+              sets:      [],
+            };
           }
+          missingInfo[key].sets.push({
+            setNumber: set.number,
+            setName:   set.name,
+            needed:    part.quantity,
+            owned,
+            missing:   part.quantity - owned,
+          });
         }
       }
     }
-  } catch (error) {
-    console.error('Erreur récupération pièces manquantes:', error);
-  }
-  
+  } catch (e) { console.error('getMissingPartsInfo:', e); }
   return missingInfo;
 }
 
@@ -1716,8 +1737,7 @@ async function removePartFromDB(partNum, colorId) {
 
 // Afficher l'inventaire personnel (CORRIGÉ)
 async function showPersonalInventory() {
-  // Utiliser le gestionnaire unifié pour éviter les doublons
-  const inventory = unifiedDataManager.currentData.inventory;
+  const inventory      = UnifiedDataManager.getInventory();
   const missingPartsInfo = getMissingPartsInfo();
 
   // Filtrer les doublons et enrichir avec les informations des pièces
@@ -1755,7 +1775,7 @@ async function showPersonalInventory() {
     
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
       <h2>Mon Inventaire LEGO (${uniqueInventory.length} références)</h2>
-      <button class="btn" onclick="unifiedDataManager.exportData()">📥 Exporter JSON</button>
+      <button class="btn" onclick="UnifiedDataManager.exportData()">📥 Exporter JSON</button>
     </div>
     
     ${uniqueInventory.length === 0 ? `
@@ -1875,113 +1895,6 @@ async function generateInventoryRows(uniqueInventory, missingPartsInfo) {
   return rows.join('');
 }
 
-// Fonction pour transférer une pièce de l'inventaire vers un set (CORRIGÉE)
-async function transferToSetOptimized(partNum, colorId, setNumber, delta, rowIndex) {
-  try {
-    console.log(`Transfert: ${partNum}, couleur ${colorId}, set ${setNumber}, delta ${delta}`);
-    
-    // Trouver l'item dans l'inventaire unifié par color_id
-    const inventoryItem = unifiedDataManager.currentData.inventory.find(
-      item => item.part_num === partNum && item.color_id == colorId
-    );
-    
-    if (!inventoryItem) {
-      showToast('Pièce non trouvée dans l\'inventaire', 'error');
-      return;
-    }
-    
-    // Trouver le set et la pièce dans le set
-    const set = unifiedDataManager.currentData.sets.find(s => s.number === setNumber);
-    if (!set) {
-      showToast('Set non trouvé', 'error');
-      return;
-    }
-    
-    const setPart = set.parts.find(p => p.part_num === partNum && p.color_id == colorId);
-    if (!setPart) {
-      showToast('Pièce non trouvée dans le set', 'error');
-      return;
-    }
-    
-    const currentInventoryQty = inventoryItem.quantity;
-    const currentSetQty = setPart.quantity_owned || 0;
-    
-    // Vérifications selon le type de transfert
-    if (delta > 0) {
-      // Transfert INVENTAIRE → SET : vérifier qu'on a assez en inventaire
-      if (currentInventoryQty <= 0) {
-        showToast('Quantité insuffisante dans l\'inventaire', 'error');
-        return;
-      }
-      // Vérifier qu'on ne dépasse pas la quantité nécessaire dans le set
-      if (currentSetQty >= setPart.quantity) {
-        showToast('Set déjà complet pour cette pièce', 'info');
-        return;
-      }
-    } else {
-      // Transfert SET → INVENTAIRE : vérifier qu'on peut retirer du set
-      if (currentSetQty <= 0) {
-        showToast('Aucune pièce à retirer du set', 'error');
-        return;
-      }
-    }
-    
-    // Calculer les nouvelles quantités
-    const newInventoryQty = Math.max(0, currentInventoryQty - delta);
-    const newSetQty = Math.max(0, Math.min(currentSetQty + delta, setPart.quantity));
-    
-    console.log(`Avant: inventaire=${currentInventoryQty}, set=${currentSetQty}`);
-    console.log(`Après: inventaire=${newInventoryQty}, set=${newSetQty}`);
-    
-    // 1. Modifier la quantité dans l'inventaire unifié
-    unifiedDataManager.updateInventory(
-      partNum, 
-      colorId, 
-      inventoryItem.color_name, 
-      newInventoryQty, 
-      inventoryItem.category
-    );
-    
-    // 2. Modifier la quantité dans le set (format unifié)
-    setPart.quantity_owned = newSetQty;
-    
-    // Sauvegarder
-    await unifiedDataManager.saveUnifiedData();
-    
-    // 3. Mettre à jour l'affichage de la quantité d'inventaire
-    const qtyElement = document.getElementById(`inventory-qty-${partNum}-${colorId}`);
-    if (qtyElement) {
-      qtyElement.textContent = newInventoryQty;
-      
-      // Animation pour feedback visuel
-      qtyElement.style.backgroundColor = delta > 0 ? '#ff9800' : '#2196f3';
-      qtyElement.style.color = 'white';
-      qtyElement.style.transition = 'all 0.3s ease';
-      
-      setTimeout(() => {
-        qtyElement.style.backgroundColor = '';
-        qtyElement.style.color = '';
-      }, 500);
-    }
-    
-    // 4. Calculer le nouveau nombre manquant
-    const newMissing = setPart.quantity - newSetQty;
-    
-    if (delta > 0) {
-      showToast(`Pièce transférée au set ${setNumber} (${newMissing} manquant(s))`, 'success');
-    } else {
-      showToast(`Pièce retirée du set ${setNumber} (${newMissing} manquant(s))`, 'info');
-    }
-    
-    // 5. Mettre à jour l'affichage des informations de manquant
-    updateMissingInfoDisplay(partNum, colorId, setNumber, rowIndex);
-    
-  } catch (error) {
-    console.error('Erreur transfert vers set:', error);
-    showToast('Erreur lors du transfert', 'error');
-  }
-}
-
 // Fonction optimisée pour charger les images d'inventaire
 async function loadInventoryImageOptimized(partNum, colorId, index) {
   try {
@@ -2038,9 +1951,9 @@ async function loadInventoryImageOptimized(partNum, colorId, index) {
 async function changeInventoryQuantityOptimized(partNum, colorId, delta, rowIndex) {
   try {
     // Trouver l'item dans l'inventaire unifié par color_id
-    const inventoryItem = unifiedDataManager.currentData.inventory.find(
-      item => item.part_num === partNum && item.color_id == colorId
-    );
+const inventoryItem = UnifiedDataManager.getInventory().find(
+  item => item.part_num === partNum && item.color_id == colorId
+);
     
     if (!inventoryItem) {
       showToast('Pièce non trouvée dans l\'inventaire', 'error');
@@ -2051,15 +1964,8 @@ async function changeInventoryQuantityOptimized(partNum, colorId, delta, rowInde
     const newQty = Math.max(0, currentQty + delta);
     
     // Mettre à jour via le gestionnaire unifié
-    unifiedDataManager.updateInventory(
-      partNum, 
-      colorId, 
-      inventoryItem.color_name, 
-      newQty, 
-      inventoryItem.category
-    );
-    
-    await unifiedDataManager.saveUnifiedData();
+UnifiedDataManager.updateInventory(partNum, colorId, newQty, inventoryItem.color_name, inventoryItem.category);
+await UnifiedDataManager.saveUnifiedData();
     
     // Mettre à jour SEULEMENT l'affichage de la quantité
     const qtyElement = document.getElementById(`inventory-qty-${partNum}-${colorId}`);
@@ -2098,50 +2004,26 @@ async function changeInventoryQuantityOptimized(partNum, colorId, delta, rowInde
 }
 
 // Fonction optimisée pour le transfert vers un set
-// Remplacer le contenu de la fonction transferToSetOptimized existante
 async function transferToSetOptimized(partNum, colorId, setNumber, delta, rowIndex) {
   try {
     if (delta > 0) {
-      // Transférer DE l'inventaire VERS le set
-      const success = await unifiedDataManager.transferPartToSet(partNum, colorId, setNumber, delta);
-      if (success) {
-        showToast(`${delta} pièce(s) transférée(s) vers le set ${setNumber}`, 'success');
+      const result = UnifiedDataManager.transferPartToSet(setNumber, partNum, colorId, 1);
+      if (result.success) {
+        showToast(`${result.transferred} pièce(s) transférée(s) vers le set ${setNumber}`, 'success');
+      } else {
+        showToast(result.error, 'error');
+        return;
       }
     } else {
-      // Retirer DU set VERS l'inventaire
-      const set = unifiedDataManager.currentData.sets.find(s => s.number === setNumber);
-      if (set) {
-        const part = set.parts.find(p => p.part_num === partNum && p.color_id === colorId);
-        if (part && part.quantity_owned > 0) {
-          part.quantity_owned = Math.max(0, part.quantity_owned + delta);
-          
-          const currentInventoryQty = unifiedDataManager.getInventoryQuantity(partNum, colorId);
-          const inventoryItem = unifiedDataManager.currentData.inventory.find(
-            item => item.part_num === partNum && item.color_id === colorId
-          );
-          
-          if (inventoryItem) {
-            unifiedDataManager.updateInventory(
-              partNum, 
-              colorId, 
-              inventoryItem.color_name, 
-              currentInventoryQty - delta,
-              inventoryItem.category
-            );
-          }
-          
-          await unifiedDataManager.saveUnifiedData();
-          showToast(`${-delta} pièce(s) retirée(s) du set ${setNumber}`, 'success');
-        } else {
-          showToast('Aucune pièce à retirer du set', 'error');
-          return;
-        }
+      const result = UnifiedDataManager.transferPartFromSet(setNumber, partNum, colorId, 1);
+      if (result.success) {
+        showToast(`${result.returned} pièce(s) retirée(s) du set ${setNumber}`, 'info');
+      } else {
+        showToast(result.error, 'error');
+        return;
       }
     }
-    
-    // Utiliser le nom de fonction existant
     updateMissingInfoDisplay(partNum, colorId, setNumber, rowIndex);
-    
   } catch (error) {
     console.error('Erreur transfert:', error);
     showToast('Erreur lors du transfert: ' + error.message, 'error');
@@ -2151,7 +2033,7 @@ async function transferToSetOptimized(partNum, colorId, setNumber, delta, rowInd
 // Fonction pour mettre à jour l'affichage des informations de manquant
 // Remplacer le contenu de la fonction updateMissingInfoDisplay existante
 function updateMissingInfoDisplay(partNum, colorId, setNumber, rowIndex) {
-  const availableQty = unifiedDataManager.getInventoryQuantity(partNum, colorId);
+const availableQty = UnifiedDataManager.getInventoryQuantity(partNum, colorId);
   
   // Mettre à jour la quantité d'inventaire affichée
   const qtyElement = document.getElementById(`inventory-qty-${partNum}-${colorId}`);
@@ -2223,6 +2105,38 @@ function updateMissingInfoDisplay(partNum, colorId, setNumber, rowIndex) {
       }).join('') 
       : '<span style="color: #888; font-size: 0.8em;">-</span>';
   }
+}
+
+function setSetImageError(setNumber, index) {
+  const imgContainer = document.getElementById(`set-img-${setNumber}-${index}`);
+  if (imgContainer) {
+    imgContainer.innerHTML = `<div style="width:30px;height:30px;background:#f0f0f0;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:0.6em;">?</div>`;
+  }
+}
+
+function performAdvancedSearch(parts, query) {
+  if (!query) return parts;
+  // Normaliser : AND/OR/NOT + guillemets
+  const q = query.trim();
+  // Phrases exactes entre guillemets
+  const exactPhrases = [];
+  const cleaned = q.replace(/"([^"]+)"/g, (_, phrase) => {
+    exactPhrases.push(phrase.toLowerCase());
+    return '';
+  });
+  // Découper par AND / OR / NOT
+  const tokens = cleaned.split(/\s+(AND|OR|NOT)\s+|\s+/i).filter(Boolean);
+  
+  return parts.filter(part => {
+    const text = ((part.name || '') + ' ' + (part.part_num || '')).toLowerCase();
+    // Vérifier les phrases exactes
+    for (const phrase of exactPhrases) {
+      if (!text.includes(phrase)) return false;
+    }
+    // Traitement simple AND (tous les tokens non-opérateurs doivent être présents)
+    const words = tokens.filter(t => !['AND','OR','NOT'].includes(t.toUpperCase()));
+    return words.every(w => text.includes(w.toLowerCase()));
+  });
 }
 
 // Dans app.html, remplacer loadSetMiniature par cette version adaptée :
