@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "generated_at": "2026-03-15T12:04:08.212948+00:00",
+  "sha256": "06fa62416890a3dd2db0fed9b68b68e4ea77af48dddef386b3840d69d3d3067f",
+  "size_raw": 23620170,
+  "size_gz": 2983018,
+  "stats": {
+    "categories": 76,
+    "colors": 275,
+    "parts": 61702,
+    "inventory_parts": 93885,
+    "sets_autocomplete": 26334
+  }
+}
