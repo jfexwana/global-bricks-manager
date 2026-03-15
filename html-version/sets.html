@@ -268,68 +268,99 @@
 
   // ── API Rebrickable : récupération complète d'un set ──────────────────────
 
-  async function fetchSetFromApi(setNum) {
-    const headers = apiHeaders();
-    if (!getApiKey()) throw new Error("Pas de clé API");
+const API_DELAY_MS = 250; // pause entre requêtes
 
-    // Infos générales du set
-    const setResp = await fetch(`${REBRICKABLE_API}/sets/${setNum}/`, { headers });
-    if (!setResp.ok) throw new Error(`HTTP ${setResp.status} pour set ${setNum}`);
-    const setInfo = await setResp.json();
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-    // Pièces (avec pagination)
-    const parts = await fetchAllPages(`${REBRICKABLE_API}/sets/${setNum}/parts/`, headers);
-
-    // Minifigures
-    let minifigParts = [];
-    try {
-      const figs = await fetchAllPages(`${REBRICKABLE_API}/sets/${setNum}/minifigs/`, headers);
-      for (const fig of figs) {
-        const figParts = await fetchAllPages(
-          `${REBRICKABLE_API}/minifigs/${fig.set_num}/parts/`, headers
-        );
-        figParts.forEach(p => p._from_minifig = fig.set_num);
-        minifigParts.push(...figParts);
-      }
-    } catch (e) {
-      console.warn("[sets] Minifigs fetch failed", e);
+async function fetchAllPagesThrottled(baseUrl, headers) {
+  let results = [];
+  let url = baseUrl + (baseUrl.includes("?") ? "&" : "?") + "page_size=100";
+  while (url) {
+    const resp = await fetch(url, { headers });
+    if (resp.status === 429) {
+      const retry = parseInt(resp.headers.get("Retry-After") || "5");
+      showToast(`Limite API atteinte, attente ${retry}s…`, "warning");
+      await sleep(retry * 1000);
+      continue; // retry même URL
     }
-
-    // Normalisation des pièces
-    const normalizePart = (p, isMinifig = false, isSpare = false) => ({
-      part_num:       p.part?.part_num || "",
-      name:           p.part?.name || "",
-      color_id:       p.color?.id || 0,
-      color_name:     p.color?.name || "",
-      img_url:        p.part?.part_img_url || "",
-      quantity:       p.quantity || 0,
-      quantity_owned: 0,
-      is_spare:       isSpare,
-      is_minifig:     isMinifig,
-    });
-
-    const mainParts   = parts.filter(p => !p.is_spare).map(p => normalizePart(p, false, false));
-    const spareParts  = parts.filter(p => p.is_spare) .map(p => normalizePart(p, false, true));
-    const minifigNorm = minifigParts.map(p => normalizePart(p, true, false));
-
-    const allParts = [...mainParts, ...minifigNorm, ...spareParts];
-
-    const result = {
-      number:    setInfo.set_num,
-      name:      setInfo.name,
-      year:      setInfo.year,
-      num_parts: setInfo.num_parts,
-      img_url:   setInfo.set_img_url || "",
-      parts:     allParts,
-    };
-
-    // Enrichir l'autocomplétion IndexedDB avec l'image récupérée
-    await LegoDb.enrichSetAutocomplete(setInfo.set_num, {
-      img_url: setInfo.set_img_url || "",
-    }).catch(() => {});
-
-    return result;
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} pour ${url}`);
+    const data = await resp.json();
+    results.push(...(data.results || []));
+    url = data.next || null;
+    if (url) await sleep(API_DELAY_MS);
   }
+  return results;
+}
+
+async function fetchSetFromApi(setNum) {
+  const headers = apiHeaders();
+  if (!getApiKey()) throw new Error("Pas de clé API");
+
+  // Infos générales
+  const setResp = await fetch(`${REBRICKABLE_API}/sets/${setNum}/`, { headers });
+  if (!setResp.ok) throw new Error(`HTTP ${setResp.status} pour set ${setNum}`);
+  const setInfo = await setResp.json();
+  await sleep(API_DELAY_MS);
+
+  // Pièces principales
+  const parts = await fetchAllPagesThrottled(
+    `${REBRICKABLE_API}/sets/${setNum}/parts/`, headers
+  );
+  await sleep(API_DELAY_MS);
+
+  // Minifigures + leurs pièces (séquentiel)
+  let minifigParts = [];
+  let minifigsMeta = [];
+  try {
+    const figs = await fetchAllPagesThrottled(
+      `${REBRICKABLE_API}/sets/${setNum}/minifigs/`, headers
+    );
+    for (const fig of figs) {
+      await sleep(API_DELAY_MS);
+      const figParts = await fetchAllPagesThrottled(
+        `${REBRICKABLE_API}/minifigs/${fig.set_num}/parts/`, headers
+      );
+      figParts.forEach(p => { p._from_minifig = fig.set_num; });
+      minifigParts.push(...figParts);
+      minifigsMeta.push({
+        set_num:    fig.set_num,
+        name:       fig.set_name,
+        quantity:   fig.quantity,
+        img_url:    fig.set_img_url || "",
+        num_parts:  fig.num_parts,
+      });
+    }
+  } catch (e) {
+    console.warn("[sets] Minifigs fetch failed", e);
+  }
+
+  const normalizePart = (p, minifigRef = null, isSpare = false) => ({
+    part_num:       p.part?.part_num || "",
+    name:           p.part?.name || "",
+    color_id:       p.color?.id ?? 0,
+    color_name:     p.color?.name || "",
+    img_url:        p.part?.part_img_url || "",
+    quantity:       p.quantity || 0,
+    quantity_owned: 0,
+    is_spare:       isSpare,
+    is_minifig:     !!minifigRef,
+    minifig_ref:    minifigRef,   // ← nouveau : set_num de la minifig
+  });
+
+  const mainParts  = parts.filter(p => !p.is_spare).map(p => normalizePart(p, null, false));
+  const spareParts = parts.filter(p =>  p.is_spare).map(p => normalizePart(p, null, true));
+  const minifigN   = minifigParts.map(p => normalizePart(p, p._from_minifig, false));
+
+  return {
+    number:    setInfo.set_num,
+    name:      setInfo.name,
+    year:      setInfo.year,
+    num_parts: setInfo.num_parts,
+    img_url:   setInfo.set_img_url || "",
+    parts:     [...mainParts, ...minifigN, ...spareParts],
+    minifigs:  minifigsMeta,       // ← nouveau : méta des minifigs
+  };
+}
 
   async function fetchAllPages(baseUrl, headers) {
     let results = [];
@@ -421,61 +452,152 @@
     renderPartsList();
   }
 
-  function renderPartsList() {
-    if (!currentSetData) return;
-    const hideCompleted = document.getElementById("hide-completed").checked;
-    const mainParts  = currentSetData.parts.filter(p => !p.is_spare);
-    const spareParts = currentSetData.parts.filter(p => p.is_spare);
+function renderPartsList() {
+  if (!currentSetData) return;
+  const hideCompleted = document.getElementById("hide-completed").checked;
 
-    const total  = mainParts.reduce((s, p) => s + p.quantity, 0);
-    const owned  = mainParts.reduce((s, p) => s + Math.min(p.quantity_owned, p.quantity), 0);
-    const pct    = total > 0 ? Math.round((owned / total) * 100) : 0;
+  const mainParts  = currentSetData.parts.filter(p => !p.is_spare && !p.is_minifig);
+  const minifigParts = currentSetData.parts.filter(p => !p.is_spare && p.is_minifig);
+  const spareParts = currentSetData.parts.filter(p => p.is_spare);
 
-    document.getElementById("detail-progress").style.width = pct + "%";
-    document.getElementById("detail-progress-label").textContent =
-      `${owned} / ${total} pièces (${pct}%)`;
+  // Grouper les pièces de minifig par minifig_ref
+  const minifigGroups = new Map();
+  for (const p of minifigParts) {
+    const ref = p.minifig_ref || "unknown";
+    if (!minifigGroups.has(ref)) minifigGroups.set(ref, []);
+    minifigGroups.get(ref).push(p);
+  }
 
-    const renderRows = (parts) => parts
-      .filter(p => !hideCompleted || p.quantity_owned < p.quantity)
-      .map(p => {
-        const missing = p.quantity - p.quantity_owned;
-        const invQty  = UnifiedDataManager.getInventoryQuantity(p.part_num, p.color_id);
-        return `<tr class="${p.quantity_owned >= p.quantity ? "row-complete" : ""}">
-          <td><img src="${escapeHTML(p.img_url || "")}" class="part-thumb"
-               onerror="this.src='data:image/svg+xml,${encodeURIComponent(placeholderSVG())}'"/></td>
-          <td>
-            <span class="part-num">${escapeHTML(p.part_num)}</span>
-            <span class="part-name">${escapeHTML(p.name || "")}</span>
-            ${p.is_minifig ? '<span class="badge badge-minifig">Minifig</span>' : ""}
-          </td>
-          <td><span class="color-chip" style="background:#${getColorHex(p.color_id)}"></span>${escapeHTML(p.color_name || String(p.color_id))}</td>
-          <td>${p.quantity}</td>
-          <td>
-            <div class="qty-control">
+  // Stats de progression (pièces principales + minifigs, pas les spares)
+  const allTracked = [...mainParts, ...minifigParts];
+  const total  = allTracked.reduce((s, p) => s + p.quantity, 0);
+  const owned  = allTracked.reduce((s, p) => s + Math.min(p.quantity_owned, p.quantity), 0);
+  const pct    = total > 0 ? Math.round((owned / total) * 100) : 0;
+
+  document.getElementById("detail-progress").style.width = pct + "%";
+  document.getElementById("detail-progress-label").textContent =
+    `${owned} / ${total} pièces (${pct}%)`;
+
+  // Rendu d'une ligne de pièce
+  const renderRow = (p, isSpare = false) => {
+    const missing = p.quantity - p.quantity_owned;
+    const invQty  = UnifiedDataManager.getInventoryQuantity(p.part_num, p.color_id);
+    const done    = p.quantity_owned >= p.quantity;
+    if (hideCompleted && done) return "";
+    return `<tr class="${done ? "row-complete" : ""}">
+      <td><img src="${escapeHTML(p.img_url||"")}" class="part-thumb"
+           onerror="this.src='data:image/svg+xml,${encodeURIComponent(placeholderSVG())}'"/></td>
+      <td>
+        <span class="part-num">${escapeHTML(p.part_num)}</span>
+        <span class="part-name">${escapeHTML(p.name||"")}</span>
+        ${p.is_minifig ? '<span class="badge badge-minifig">Minifig</span>' : ""}
+      </td>
+      <td><span class="color-chip" style="background:#${getColorHex(p.color_id)}"></span>
+          ${escapeHTML(p.color_name||String(p.color_id))}</td>
+      <td>${p.quantity}</td>
+      <td>
+        ${isSpare
+          ? `<span style="color:#888;font-size:0.85em">${p.quantity_owned} / ${p.quantity}</span>`
+          : `<div class="qty-control">
               <button class="btn-qty" onclick="changePartQty('${escapeHTML(p.part_num)}',${p.color_id},-1)">−</button>
               <span>${p.quantity_owned}</span>
               <button class="btn-qty" onclick="changePartQty('${escapeHTML(p.part_num)}',${p.color_id},+1)">+</button>
+            </div>`
+        }
+      </td>
+      <td>
+        ${!isSpare && missing > 0 && invQty > 0
+          ? `<button class="btn btn-sm btn-primary"
+                onclick="transferFromInventory('${escapeHTML(p.part_num)}',${p.color_id},${missing})">
+               Transférer (${Math.min(invQty,missing)})
+             </button>`
+          : !isSpare && missing > 0
+            ? `<span class="missing-badge">−${missing}</span>`
+            : ""
+        }
+      </td>
+    </tr>`;
+  };
+
+  // Rendu sections principales
+  let html = renderRows(mainParts, hideCompleted);
+
+  // Rendu sections minifigs
+  if (minifigGroups.size > 0) {
+    for (const [ref, parts] of minifigGroups.entries()) {
+      const meta = (currentSetData.minifigs || []).find(m => m.set_num === ref);
+      const figName  = meta?.name  || ref;
+      const figImg   = meta?.img_url || "";
+      const figQty   = meta?.quantity || 1;
+
+      html += `
+        <tr>
+          <td colspan="6" style="padding:0">
+            <div class="minifig-separator">
+              ${figImg
+                ? `<img src="${escapeHTML(figImg)}" alt="${escapeHTML(figName)}"
+                        class="minifig-header-img"
+                        onerror="this.style.display='none'">`
+                : ""}
+              <div>
+                <strong>${escapeHTML(figName)}</strong>
+                <span class="badge badge-minifig">×${figQty}</span>
+              </div>
             </div>
           </td>
-          <td>
-            ${missing > 0 && invQty > 0
-              ? `<button class="btn btn-sm btn-primary" onclick="transferFromInventory('${escapeHTML(p.part_num)}',${p.color_id},${missing})">
-                  Transférer (${Math.min(invQty, missing)})
-                </button>`
-              : missing > 0 ? `<span class="missing-badge">−${missing}</span>` : ""}
-          </td>
-        </tr>`;
-      }).join("");
-
-    document.getElementById("parts-tbody").innerHTML    = renderRows(mainParts);
-    const sparesContainer = document.getElementById("spares-container");
-    if (spareParts.length > 0) {
-      document.getElementById("spares-tbody").innerHTML = renderRows(spareParts);
-      sparesContainer.style.display = "block";
-    } else {
-      sparesContainer.style.display = "none";
+        </tr>
+      `;
+      parts.forEach(p => { html += renderRow(p); });
     }
   }
+
+  document.getElementById("parts-tbody").innerHTML = html;
+
+  // Pièces de rechange — affichage info seulement
+  const sparesContainer = document.getElementById("spares-container");
+  if (spareParts.length > 0) {
+    document.getElementById("spares-tbody").innerHTML =
+      spareParts.map(p => renderRow(p, true)).join("");
+    sparesContainer.style.display = "block";
+  } else {
+    sparesContainer.style.display = "none";
+  }
+}
+
+// Helper pour les lignes classiques
+function renderRows(parts, hideCompleted) {
+  return parts
+    .filter(p => !hideCompleted || p.quantity_owned < p.quantity)
+    .map(p => {
+      const missing = p.quantity - p.quantity_owned;
+      const invQty  = UnifiedDataManager.getInventoryQuantity(p.part_num, p.color_id);
+      const done    = p.quantity_owned >= p.quantity;
+      return `<tr class="${done ? "row-complete" : ""}">
+        <td><img src="${escapeHTML(p.img_url||"")}" class="part-thumb"
+             onerror="this.src='data:image/svg+xml,${encodeURIComponent(placeholderSVG())}'" /></td>
+        <td>
+          <span class="part-num">${escapeHTML(p.part_num)}</span>
+          <span class="part-name">${escapeHTML(p.name||"")}</span>
+        </td>
+        <td><span class="color-chip" style="background:#${getColorHex(p.color_id)}"></span>
+            ${escapeHTML(p.color_name||String(p.color_id))}</td>
+        <td>${p.quantity}</td>
+        <td><div class="qty-control">
+          <button class="btn-qty" onclick="changePartQty('${escapeHTML(p.part_num)}',${p.color_id},-1)">−</button>
+          <span>${p.quantity_owned}</span>
+          <button class="btn-qty" onclick="changePartQty('${escapeHTML(p.part_num)}',${p.color_id},+1)">+</button>
+        </div></td>
+        <td>
+          ${missing > 0 && invQty > 0
+            ? `<button class="btn btn-sm btn-primary"
+                  onclick="transferFromInventory('${escapeHTML(p.part_num)}',${p.color_id},${missing})">
+                 Transférer (${Math.min(invQty,missing)})
+               </button>`
+            : missing > 0 ? `<span class="missing-badge">−${missing}</span>` : ""}
+        </td>
+      </tr>`;
+    }).join("");
+}
 
   function changePartQty(partNum, colorId, delta) {
     if (!currentSetData) return;

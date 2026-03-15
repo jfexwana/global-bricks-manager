@@ -243,6 +243,13 @@ const UnifiedDataManager = {
         is_spare:       p.is_spare || false,
         is_minifig:     p.is_minifig || false,
       })),
+     minifigs: (setData.minifigs || []).map(m => ({
+    set_num:   m.set_num,
+    name:      m.name || "",
+    quantity:  m.quantity || 1,
+    img_url:   m.img_url || "",
+    num_parts: m.num_parts || 0,
+  })), 
     };
     if (idx >= 0) this.data.sets[idx] = normalized;
     else          this.data.sets.push(normalized);
