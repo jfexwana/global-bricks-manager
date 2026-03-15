@@ -1,397 +1,364 @@
-// unified-data-manager.js - Gestionnaire de données unifié
-class UnifiedDataManager {
-  constructor() {
-    this.UNIFIED_SAVE_KEY = 'lego_unified_data_v2';
-    this._saveTimeout = null; // AJOUTER cette ligne
-    this.currentData = {
-      version: "2.0",
-      timestamp: new Date().toISOString(),
-      user: {
-        preferences: {
-          theme: 'light',
-          autoSave: true,
-          apiKey: localStorage.getItem('rebrickable_api_key') || ''
-        }
-      },
-      inventory: [],
-      sets: []
-    };
-  }
+/**
+ * unified-data-manager.js  —  Global Bricks Manager
+ * Gestion centralisée des données utilisateur (inventaire + sets).
+ * v2.1 — ajout du cache API sets via LegoDb.setCachedSet
+ */
 
-// Sauvegarde immédiate (pour export, navigation)
-async saveUnifiedData() {
-  return this._doSave();
-}
+const STORAGE_KEY    = "gbm_unified_v2";
+const STORAGE_KEY_V1 = "lego_personal_inventory"; // legacy
+const STORAGE_KEY_S1 = "lego_sets_data";          // legacy
 
-// Sauvegarde différée (pour +/- pièces répétitifs)
-scheduleSave() {
-  if (this._saveTimeout) clearTimeout(this._saveTimeout);
-  this._saveTimeout = setTimeout(() => this._doSave(), 500);
-}
+// ── Format interne ────────────────────────────────────────────────────────────
 
-async _doSave() {
-  try {
-    if (this._saveTimeout) {
-      clearTimeout(this._saveTimeout);
-      this._saveTimeout = null;
-    }
-    this.currentData.timestamp = new Date().toISOString();
-    localStorage.setItem(this.UNIFIED_SAVE_KEY, JSON.stringify(this.currentData));
-    return true;
-  } catch (error) {
-    console.error('Erreur sauvegarde:', error);
-    return false;
-  }
-}
-
-  // Ajouter cette méthode dans UnifiedDataManager
-cleanupLegacyStorage() {
-  // Supprimer les anciens systèmes de sauvegarde après migration
-  const legacyKeys = [
-    'lego_personal_inventory',
-    'lego_sets_data', 
-    'GlobalBricks_Save_Bulk',
-    'darkMode' // Maintenant dans user.preferences.theme
-  ];
-  
-  legacyKeys.forEach(key => {
-    if (localStorage.getItem(key)) {
-      console.log(`Suppression de l'ancienne clé: ${key}`);
-      localStorage.removeItem(key);
-    }
-  });
-}
-
-// Obtenir le nom d'une pièce depuis IndexedDB
-async getPartName(partNum) {
-  try {
-    if (window.legoDb) {
-      const parts = await window.legoDb.getData('parts');
-      const part = parts.find(p => p.part_num === partNum);
-      return part ? part.name : 'Pièce inconnue';
-    }
-    return 'Pièce inconnue';
-  } catch (error) {
-    console.error('Erreur récupération nom pièce:', error);
-    return 'Pièce inconnue';
-  }
-}
-
-  // Charger les données unifiées
-  async loadUnifiedData() {
-    try {
-      const saved = localStorage.getItem(this.UNIFIED_SAVE_KEY);
-      if (saved) {
-        const data = JSON.parse(saved);
-        
-        // Migration depuis l'ancien format si nécessaire
-        if (!data.version || data.version !== "2.0") {
-          console.log('Migration des données vers le format v2.0...');
-          this.currentData = await this.migrateFromLegacyData(data);
-        } else {
-          this.currentData = data;
-        }
-        
-        console.log('Données unifiées chargées:', this.currentData);
-        return this.currentData;
-      } else {
-        // Première utilisation, essayer de migrer depuis les anciens formats
-        console.log('Première utilisation, migration depuis les anciens formats...');
-        this.currentData = await this.migrateFromLegacyData();
-        await this.saveUnifiedData();
-        return this.currentData;
-      }
-    } catch (error) {
-      console.error('Erreur chargement données unifiées:', error);
-      return this.currentData;
-    }
-  }
-
-  // Migrer depuis les anciens formats de données
-  async migrateFromLegacyData(existingData = null) {
-    const newData = {
-      version: "2.0",
-      timestamp: new Date().toISOString(),
-      user: {
-        preferences: {
-          theme: localStorage.getItem('darkMode') === 'true' ? 'dark' : 'light',
-          autoSave: true,
-          apiKey: localStorage.getItem('rebrickable_api_key') || ''
-        }
-      },
-      inventory: [],
-      sets: []
-    };
-
-    try {
-      // Migrer l'inventaire personnel depuis l'ancien format
-      const oldInventory = localStorage.getItem('lego_personal_inventory');
-      if (oldInventory) {
-        const inventory = JSON.parse(oldInventory);
-        let inventoryArray = [];
-        
-        if (Array.isArray(inventory)) {
-          inventoryArray = inventory;
-        } else if (typeof inventory === 'object') {
-          inventoryArray = Object.values(inventory);
-        }
-        
-newData.inventory = await Promise.all(inventoryArray.map(async item => {
-  let colorId = item.color_id;
-  
-  // Si pas de color_id, essayer de le récupérer depuis le nom de couleur
-  if (colorId === undefined || colorId === null) {
-    colorId = await this.getColorIdByName(item.color_name);
-  }
-  
+function emptyData() {
   return {
-    part_num: item.part_num,
-    color_id: colorId, // Ne pas forcer à 0, utiliser la vraie valeur
-    color_name: item.color_name,
-    quantity: item.quantity,
-    category: item.category || 'Unknown'
-  };      
-}));
-      }
+    version:   "2.1",
+    timestamp: new Date().toISOString(),
+    user: {
+      preferences: {
+        theme:    "light",
+        autoSave: true,
+        apiKey:   "",
+      },
+    },
+    inventory: [],  // [{ part_num, color_id, color_name, quantity, category }]
+    sets:      [],  // [{ number, name, year, num_parts, img_url, parts: [...] }]
+  };
+}
 
-      // Migrer les sets depuis l'ancien format
-      const oldSets = localStorage.getItem('lego_sets_data');
-      if (oldSets) {
-        const setsData = JSON.parse(oldSets);
-        if (setsData.sets && Array.isArray(setsData.sets)) {
-          newData.sets = setsData.sets.map(set => ({
-            number: set.number,
-            name: set.name,
-            parts: set.parts
-              .filter(p => !p.isSpare) // Exclure les pièces de rechange
-              .map(p => ({
-                part_num: p.partNum,
-                color_id: p.colorId,
-                quantity: p.quantity,
-                quantity_owned: p.quantityOwned || 0
-              }))
-          }));
-        }
-      }
+// ── Chargement / sauvegarde ───────────────────────────────────────────────────
 
-      console.log('Migration terminée, données converties:', newData);
-      // Nettoyer les anciennes clés après migration réussie
-setTimeout(() => this.cleanupLegacyStorage(), 2000); // Délai pour éviter race conditions
-
-      return newData;
-      
-    } catch (error) {
-      console.error('Erreur migration des données:', error);
-      return newData;
+function loadUnifiedData() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (raw) {
+    try {
+      const data = JSON.parse(raw);
+      return migrateTo21(data);
+    } catch (e) {
+      console.error("[UDM] Données corrompues, reset", e);
     }
   }
+  // Migration depuis anciens formats
+  const migrated = migrateFromLegacy();
+  if (migrated) return migrated;
+  return emptyData();
+}
 
-  // Mettre à jour l'inventaire
-updateInventory(partNum, colorId, colorName, quantity, category = 'Unknown') {
-  const index = this.currentData.inventory.findIndex(
-    item => item.part_num === partNum && item.color_id === colorId
-  );
-
-  if (quantity <= 0) {
-    if (index >= 0) {
-      this.currentData.inventory.splice(index, 1);
+function saveUnifiedData(data) {
+  data.timestamp = new Date().toISOString();
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+    if (e.name === "QuotaExceededError") {
+      console.error("[UDM] localStorage plein !");
+      // TODO : proposer un export avant d'écraser
     }
-  } else {
-    if (index >= 0) {
-      this.currentData.inventory[index].quantity = quantity;
-      this.currentData.inventory[index].category = category;
-    } else {
-      this.currentData.inventory.push({
-        part_num: partNum,
-        color_id: colorId, // Utiliser color_id comme identifiant principal
-        color_name: colorName, // Stocker aussi le nom pour l'affichage
-        quantity: quantity,
-        category: category
-      });
-    }
+    throw e;
   }
 }
 
-  // Obtenir la quantité d'une pièce dans l'inventaire
+// ── Migration v2.0 → v2.1 ────────────────────────────────────────────────────
+
+function migrateTo21(data) {
+  if (data.version === "2.1") return data;
+  data.version = "2.1";
+  // S'assurer que les sets ont les nouveaux champs
+  (data.sets || []).forEach(s => {
+    if (!s.year)      s.year      = 0;
+    if (!s.img_url)   s.img_url   = "";
+    if (!s.num_parts) s.num_parts = 0;
+  });
+  return data;
+}
+
+// ── Migration depuis anciens formats (v1) ────────────────────────────────────
+
+function migrateFromLegacy() {
+  const rawInv  = localStorage.getItem(STORAGE_KEY_V1);
+  const rawSets = localStorage.getItem(STORAGE_KEY_S1);
+  if (!rawInv && !rawSets) return null;
+
+  const data = emptyData();
+  if (rawInv) {
+    try {
+      const inv = JSON.parse(rawInv);
+      data.inventory = Object.entries(inv).flatMap(([key, qty]) => {
+        const [part_num, color_id] = key.split("_");
+        return qty > 0 ? [{
+          part_num,
+          color_id:   parseInt(color_id) || 0,
+          color_name: "",
+          quantity:   qty,
+          category:   "",
+        }] : [];
+      });
+    } catch (e) { console.warn("[UDM] Migration inventaire échouée", e); }
+  }
+  if (rawSets) {
+    try {
+      const sets = JSON.parse(rawSets);
+      data.sets = Array.isArray(sets) ? sets.map(s => ({
+        number:    s.number || s.set_num || "",
+        name:      s.name || "",
+        year:      s.year || 0,
+        num_parts: s.num_parts || 0,
+        img_url:   s.img_url || "",
+        parts:     (s.parts || []).map(p => ({
+          part_num:       p.part_num || p.partNum || "",
+          color_id:       parseInt(p.color_id || p.colorId) || 0,
+          quantity:       p.quantity || 0,
+          quantity_owned: p.quantity_owned || p.quantityOwned || 0,
+          is_spare:       p.is_spare || false,
+          is_minifig:     p.is_minifig || false,
+        })),
+      })) : [];
+    } catch (e) { console.warn("[UDM] Migration sets échouée", e); }
+  }
+  saveUnifiedData(data);
+  // Nettoyage des anciennes clés
+  localStorage.removeItem(STORAGE_KEY_V1);
+  localStorage.removeItem(STORAGE_KEY_S1);
+  console.log("[UDM] Migration legacy effectuée");
+  return data;
+}
+
+// ── API publique ──────────────────────────────────────────────────────────────
+
+const UnifiedDataManager = {
+
+  _data: null,
+
+  load() {
+    this._data = loadUnifiedData();
+    return this._data;
+  },
+
+  save() {
+    if (!this._data) return;
+    saveUnifiedData(this._data);
+  },
+
+  get data() {
+    if (!this._data) this.load();
+    return this._data;
+  },
+
+  // ── Préférences ────────────────────────────────────────────────────────────
+
+  getPreference(key) {
+    return this.data.user.preferences[key];
+  },
+
+  setPreference(key, value) {
+    this.data.user.preferences[key] = value;
+    this.save();
+  },
+
+  getApiKey() {
+    return this.data.user.preferences.apiKey || "";
+  },
+
+  setApiKey(key) {
+    this.data.user.preferences.apiKey = key;
+    this.save();
+  },
+
+  // ── Inventaire pièces en vrac ──────────────────────────────────────────────
+
   getInventoryQuantity(partNum, colorId) {
-    const item = this.currentData.inventory.find(
-      item => item.part_num === partNum && item.color_id === colorId
+    const item = this.data.inventory.find(
+      i => i.part_num === partNum && i.color_id === parseInt(colorId)
     );
     return item ? item.quantity : 0;
-  }
+  },
 
-  // Mettre à jour un set
-  updateSet(setNumber, setName, parts = null) {
-    const index = this.currentData.sets.findIndex(set => set.number === setNumber);
-
-    if (index >= 0) {
-      // Mettre à jour le set existant
-      this.currentData.sets[index].name = setName;
-      if (parts) {
-        this.currentData.sets[index].parts = parts;
-      }
-    } else {
-      // Ajouter un nouveau set
-      this.currentData.sets.push({
-        number: setNumber,
-        name: setName,
-        parts: parts || []
-      });
-    }
-  }
-
-  // Mettre à jour la quantité possédée d'une pièce dans un set
-  updateSetPartQuantity(setNumber, partNum, colorId, quantityOwned) {
-    const set = this.currentData.sets.find(s => s.number === setNumber);
-    if (set) {
-      const part = set.parts.find(p => p.part_num === partNum && p.color_id === colorId);
-      if (part) {
-        part.quantity_owned = Math.max(0, quantityOwned);
-      }
-    }
-  }
-
-  // Supprimer un set
-  removeSet(setNumber) {
-    this.currentData.sets = this.currentData.sets.filter(set => set.number !== setNumber);
-  }
-
-  // Transférer une pièce de l'inventaire vers un set
-async transferPartToSet(partNum, colorId, setNumber, quantity) {
-  try {
-    // Trouver l'item dans l'inventaire par colorId
-    const inventoryItem = this.currentData.inventory.find(
-      item => item.part_num === partNum && item.color_id === colorId
+  updateInventory(partNum, colorId, quantity, colorName = "", category = "") {
+    const idx = this.data.inventory.findIndex(
+      i => i.part_num === partNum && i.color_id === parseInt(colorId)
     );
-    
-    if (!inventoryItem || inventoryItem.quantity < quantity) {
-      throw new Error('Quantité insuffisante dans l\'inventaire');
+    if (quantity <= 0) {
+      if (idx >= 0) this.data.inventory.splice(idx, 1);
+    } else {
+      const item = { part_num: partNum, color_id: parseInt(colorId), color_name: colorName, quantity, category };
+      if (idx >= 0) this.data.inventory[idx] = item;
+      else          this.data.inventory.push(item);
     }
+    this.save();
+  },
 
-    // Réduire l'inventaire
-    inventoryItem.quantity -= quantity;
-    if (inventoryItem.quantity <= 0) {
-      this.currentData.inventory = this.currentData.inventory.filter(
-        item => !(item.part_num === partNum && item.color_id === colorId)
+  getInventory() {
+    return this.data.inventory;
+  },
+
+  // ── Sets ───────────────────────────────────────────────────────────────────
+
+  getSets() {
+    return this.data.sets;
+  },
+
+  getSet(setNumber) {
+    return this.data.sets.find(s => s.number === setNumber) || null;
+  },
+
+  /**
+   * Ajoute ou remplace un set complet.
+   * setData doit avoir : { number, name, year, num_parts, img_url, parts[] }
+   * Sauvegarde aussi en cache IndexedDB via LegoDb (si disponible).
+   */
+  async saveSet(setData) {
+    const idx = this.data.sets.findIndex(s => s.number === setData.number);
+    const normalized = {
+      number:    setData.number,
+      name:      setData.name || "",
+      year:      setData.year || 0,
+      num_parts: setData.num_parts || setData.numParts || 0,
+      img_url:   setData.img_url || setData.imgUrl || "",
+      parts:     (setData.parts || []).map(p => ({
+        part_num:       p.part_num || p.partNum || "",
+        color_id:       parseInt(p.color_id || p.colorId) || 0,
+        color_name:     p.color_name || p.colorName || "",
+        quantity:       p.quantity || 0,
+        quantity_owned: p.quantity_owned || p.quantityOwned || 0,
+        img_url:        p.img_url || p.imgUrl || "",
+        name:           p.name || "",
+        is_spare:       p.is_spare || false,
+        is_minifig:     p.is_minifig || false,
+      })),
+    };
+    if (idx >= 0) this.data.sets[idx] = normalized;
+    else          this.data.sets.push(normalized);
+    this.save();
+
+    // Cache IndexedDB
+    if (window.LegoDb) {
+      await LegoDb.setCachedSet(normalized).catch(e =>
+        console.warn("[UDM] Cache IndexedDB set échoué", e)
       );
     }
+    return normalized;
+  },
 
-    // Augmenter la quantité dans le set
-    const set = this.currentData.sets.find(s => s.number === setNumber);
-    if (set) {
-      const part = set.parts.find(p => p.part_num === partNum && p.color_id === colorId);
-      if (part) {
-        part.quantity_owned = Math.min(part.quantity, part.quantity_owned + quantity);
-      }
+  removeSet(setNumber) {
+    const idx = this.data.sets.findIndex(s => s.number === setNumber);
+    if (idx >= 0) this.data.sets.splice(idx, 1);
+    this.save();
+    if (window.LegoDb) {
+      LegoDb.deleteCachedSet(setNumber).catch(() => {});
     }
+  },
 
-    await this.saveUnifiedData();
-    return true;
-    
-  } catch (error) {
-    console.error('Erreur transfert pièce vers set:', error);
-    throw error;
-  }
-}
-
-  // Obtenir la catégorie d'une pièce
-  getPartCategory(partNum, colorName) {
-    const item = this.currentData.inventory.find(
-      item => item.part_num === partNum && item.color_name === colorName
+  updateSetPartQuantity(setNumber, partNum, colorId, quantityOwned) {
+    const set = this.getSet(setNumber);
+    if (!set) return;
+    const part = set.parts.find(
+      p => p.part_num === partNum && p.color_id === parseInt(colorId)
     );
-    return item ? item.category : 'Unknown';
-  }
-
-// Obtenir l'ID de couleur par nom (depuis IndexedDB)
-async getColorIdByName(colorName) {
-  try {
-    if (window.legoDb) {
-      const colors = await window.legoDb.getData('colors');
-      const color = colors.find(c => c.name === colorName);
-      if (color) {
-        return color.id;
-      }
-      
-      // Si pas trouvé et que c'est "Noir" ou "Black", retourner 0
-      if (colorName && (colorName.toLowerCase().includes('noir') || colorName.toLowerCase().includes('black'))) {
-        return 0;
-      }
+    if (part) {
+      part.quantity_owned = Math.max(0, Math.min(quantityOwned, part.quantity));
     }
-    
-    // Par défaut, retourner 0 (noir) plutôt qu'une valeur invalide
-    return 0;
-  } catch (error) {
-    console.error('Erreur récupération color_id:', error);
-    return 0; // Noir par défaut en cas d'erreur
-  }
-}
+    this.save();
+  },
 
-  // Exporter toutes les données
-  exportData() {
-    const blob = new Blob([JSON.stringify(this.currentData, null, 2)], {
-      type: 'application/json'
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `lego_unified_backup_${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
+  // ── Transfert inventaire ↔ set ─────────────────────────────────────────────
 
-  // Importer des données
-// REMPLACER importData() par :
+  transferPartToSet(setNumber, partNum, colorId, qtyToTransfer) {
+    const colorIdInt = parseInt(colorId);
+    const set = this.getSet(setNumber);
+    if (!set) return { success: false, error: "Set introuvable" };
 
-async importData(jsonData) {
-  try {
-    const data = typeof jsonData === 'string' ? JSON.parse(jsonData) : jsonData;
-    
-    // Validation du schéma minimal
-    const errors = [];
-    if (!data.version) errors.push('Champ "version" manquant');
-    if (!Array.isArray(data.inventory)) errors.push('Champ "inventory" invalide (doit être un tableau)');
-    if (!Array.isArray(data.sets)) errors.push('Champ "sets" invalide (doit être un tableau)');
-    
-    if (errors.length > 0) {
-      // Tenter une migration depuis l'ancien format avant d'abandonner
-      if (data.unified_data?.version === "2.0") {
-        // Format exporté via auth.js (enveloppe avec unified_data)
-        return await this.importData(data.unified_data);
-      }
-      throw new Error(`Fichier invalide : ${errors.join(', ')}`);
-    }
-    
-    // Backup automatique avant écrasement
-    const backupKey = `lego_backup_before_import_${Date.now()}`;
-    localStorage.setItem(backupKey, JSON.stringify(this.currentData));
-    console.log(`Backup créé : ${backupKey}`);
-    
-    if (data.version === "2.0") {
-      this.currentData = data;
-    } else {
-      this.currentData = await this.migrateFromLegacyData(data);
-    }
-    
-    await this.saveUnifiedData();
-    return true;
-  } catch (error) {
-    console.error('Erreur import données:', error);
-    throw new Error('Format de fichier invalide : ' + error.message);
-  }
-}
+    const part = set.parts.find(
+      p => p.part_num === partNum && p.color_id === colorIdInt
+    );
+    if (!part) return { success: false, error: "Pièce introuvable dans le set" };
 
-  // Obtenir les statistiques
+    const missing  = part.quantity - part.quantity_owned;
+    const transfer = Math.min(qtyToTransfer, missing);
+    if (transfer <= 0) return { success: false, error: "Aucun transfert nécessaire" };
+
+    const available = this.getInventoryQuantity(partNum, colorIdInt);
+    if (available < transfer) return { success: false, error: "Inventaire insuffisant" };
+
+    // Déduire de l'inventaire
+    this.updateInventory(
+      partNum, colorIdInt,
+      available - transfer,
+      part.color_name || "",
+      ""
+    );
+    // Créditer dans le set
+    part.quantity_owned += transfer;
+    this.save();
+    return { success: true, transferred: transfer };
+  },
+
+  transferPartFromSet(setNumber, partNum, colorId, qtyToReturn) {
+    const colorIdInt = parseInt(colorId);
+    const set = this.getSet(setNumber);
+    if (!set) return { success: false, error: "Set introuvable" };
+
+    const part = set.parts.find(
+      p => p.part_num === partNum && p.color_id === colorIdInt
+    );
+    if (!part) return { success: false, error: "Pièce introuvable dans le set" };
+
+    const transfer = Math.min(qtyToReturn, part.quantity_owned);
+    if (transfer <= 0) return { success: false, error: "Aucune pièce à retourner" };
+
+    part.quantity_owned -= transfer;
+    const current = this.getInventoryQuantity(partNum, colorIdInt);
+    this.updateInventory(
+      partNum, colorIdInt,
+      current + transfer,
+      part.color_name || "",
+      ""
+    );
+    this.save();
+    return { success: true, returned: transfer };
+  },
+
+  // ── Stats ──────────────────────────────────────────────────────────────────
+
   getStats() {
-    return {
-      inventoryCount: this.currentData.inventory.length,
-      totalInventoryPieces: this.currentData.inventory.reduce((sum, item) => sum + item.quantity, 0),
-      setsCount: this.currentData.sets.length,
-      completedSets: this.currentData.sets.filter(set => 
-        set.parts.every(part => part.quantity_owned >= part.quantity)
-      ).length
-    };
-  }
-}
+    const sets        = this.data.sets;
+    const inventory   = this.data.inventory;
+    const completeSets = sets.filter(s => {
+      if (!s.parts.length) return false;
+      return s.parts.every(p => p.quantity_owned >= p.quantity);
+    });
+    const totalOwnedParts = inventory.reduce((sum, i) => sum + i.quantity, 0);
 
-// Rendre disponible globalement
+    return {
+      totalSets:        sets.length,
+      completeSets:     completeSets.length,
+      incompleteSets:   sets.length - completeSets.length,
+      totalInventory:   inventory.length,
+      totalOwnedParts,
+    };
+  },
+
+  // ── Export / Import ────────────────────────────────────────────────────────
+
+  exportData() {
+    return JSON.stringify(this.data, null, 2);
+  },
+
+  importData(jsonString) {
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonString);
+    } catch (e) {
+      throw new Error("JSON invalide : " + e.message);
+    }
+    // Validation minimale
+    if (!parsed.inventory || !parsed.sets) {
+      throw new Error("Format non reconnu (clés inventory et sets requises)");
+    }
+    this._data = migrateTo21(parsed);
+    this.save();
+    return this._data;
+  },
+};
+
+// Chargement au démarrage
+UnifiedDataManager.load();
 window.UnifiedDataManager = UnifiedDataManager;
