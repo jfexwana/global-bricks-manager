@@ -1343,3 +1343,51 @@ body.dark-mode .import-set-item.existing-set {
   background: #fff;
   border: 1px solid #c5cae9;
 }
+
+/* ── Minifig separator ──────────────────────────────────────────────────── */
+.minifig-separator-row td { padding: 0; }
+.minifig-separator {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.8rem;
+  background: linear-gradient(90deg, #e8eaf6 0%, #f3f4fc 100%);
+  border-left: 3px solid #7986cb;
+}
+.minifig-header-img {
+  width: 52px;
+  height: 52px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid #c5cae9;
+  flex-shrink: 0;
+}
+.minifig-img-placeholder {
+  width: 52px;
+  height: 52px;
+  border-radius: 6px;
+  background: #e8eaf6;
+  border: 1px solid #c5cae9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  flex-shrink: 0;
+}
+.minifig-separator-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 0.9rem;
+}
+
+/* ── Spare rows ─────────────────────────────────────────────────────────── */
+.row-spare { background: rgba(23,162,184,0.06); }
+.row-spare:hover { background: rgba(23,162,184,0.1); }
+.spare-qty-info { color: #888; font-size: 0.85rem; }
+
+/* ── Action cell buttons ────────────────────────────────────────────────── */
+.btn-primary { background: #1976d2; color: #fff; }
+.btn-primary:hover { background: #1565c0; }
+

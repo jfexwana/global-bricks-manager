@@ -268,20 +268,27 @@
 
   // ── API Rebrickable : récupération complète d'un set ──────────────────────
 
-const API_DELAY_MS = 250; // pause entre requêtes
-
+// ── Throttle helper ───────────────────────────────────────────────────────
+const API_DELAY_MS = 300;
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function fetchAllPagesThrottled(baseUrl, headers) {
   let results = [];
   let url = baseUrl + (baseUrl.includes("?") ? "&" : "?") + "page_size=100";
   while (url) {
-    const resp = await fetch(url, { headers });
-    if (resp.status === 429) {
-      const retry = parseInt(resp.headers.get("Retry-After") || "5");
-      showToast(`Limite API atteinte, attente ${retry}s…`, "warning");
-      await sleep(retry * 1000);
-      continue; // retry même URL
+    let resp;
+    let attempts = 0;
+    while (attempts < 3) {
+      resp = await fetch(url, { headers });
+      if (resp.status === 429) {
+        const retry = parseInt(resp.headers.get("Retry-After") || "5");
+        console.warn(`[API] 429 sur ${url}, attente ${retry}s`);
+        showToast(`Limite API, pause ${retry}s…`, "warning");
+        await sleep(retry * 1000);
+        attempts++;
+        continue;
+      }
+      break;
     }
     if (!resp.ok) throw new Error(`HTTP ${resp.status} pour ${url}`);
     const data = await resp.json();
@@ -292,64 +299,105 @@ async function fetchAllPagesThrottled(baseUrl, headers) {
   return results;
 }
 
+// ── fetchSetFromApi avec logs détaillés ───────────────────────────────────
 async function fetchSetFromApi(setNum) {
   const headers = apiHeaders();
   if (!getApiKey()) throw new Error("Pas de clé API");
 
-  // Infos générales
+  console.group(`[fetchSetFromApi] ${setNum}`);
+
+  // 1. Infos générales du set
+  console.log("→ Récupération infos set…");
   const setResp = await fetch(`${REBRICKABLE_API}/sets/${setNum}/`, { headers });
   if (!setResp.ok) throw new Error(`HTTP ${setResp.status} pour set ${setNum}`);
   const setInfo = await setResp.json();
+  console.log("✓ Set info:", setInfo.name, setInfo.set_img_url);
   await sleep(API_DELAY_MS);
 
-  // Pièces principales
+  // 2. Pièces principales
+  console.log("→ Récupération pièces…");
   const parts = await fetchAllPagesThrottled(
     `${REBRICKABLE_API}/sets/${setNum}/parts/`, headers
   );
+  console.log(`✓ ${parts.length} pièces (dont ${parts.filter(p=>p.is_spare).length} spares)`);
   await sleep(API_DELAY_MS);
 
-  // Minifigures + leurs pièces (séquentiel)
-  let minifigParts = [];
+  // 3. Minifigures
   let minifigsMeta = [];
+  let minifigParts = [];
+
   try {
+    console.log("→ Récupération minifigs…");
     const figs = await fetchAllPagesThrottled(
       `${REBRICKABLE_API}/sets/${setNum}/minifigs/`, headers
     );
+    console.log(`✓ ${figs.length} minifigs trouvées:`, figs.map(f => f.set_num));
+
     for (const fig of figs) {
       await sleep(API_DELAY_MS);
+
+      // Image de la minifig — souvent absente dans la liste, on appelle l'endpoint dédié
+      let figImgUrl = fig.set_img_url || "";
+      if (!figImgUrl) {
+        try {
+          console.log(`  → Image pour ${fig.set_num}…`);
+          const figResp = await fetch(
+            `${REBRICKABLE_API}/minifigs/${fig.set_num}/`, { headers }
+          );
+          if (figResp.ok) {
+            const figData = await figResp.json();
+            figImgUrl = figData.set_img_url || "";
+            console.log(`  ✓ Image ${fig.set_num}:`, figImgUrl || "(aucune)");
+          }
+          await sleep(API_DELAY_MS);
+        } catch (e) {
+          console.warn(`  ✗ Erreur image minifig ${fig.set_num}:`, e.message);
+        }
+      }
+
+      minifigsMeta.push({
+        set_num:   fig.set_num,
+        name:      fig.set_name || fig.set_num,
+        quantity:  fig.quantity || 1,
+        img_url:   figImgUrl,
+        num_parts: fig.num_parts || 0,
+      });
+      console.log(`  Minifig enregistrée:`, fig.set_num, fig.set_name, `img=${figImgUrl||"(aucune)"}`);
+
+      // Pièces de cette minifig
+      console.log(`  → Pièces de ${fig.set_num}…`);
       const figParts = await fetchAllPagesThrottled(
         `${REBRICKABLE_API}/minifigs/${fig.set_num}/parts/`, headers
       );
+      console.log(`  ✓ ${figParts.length} pièces pour ${fig.set_num}`);
       figParts.forEach(p => { p._from_minifig = fig.set_num; });
       minifigParts.push(...figParts);
-      minifigsMeta.push({
-        set_num:    fig.set_num,
-        name:       fig.set_name,
-        quantity:   fig.quantity,
-        img_url:    fig.set_img_url || "",
-        num_parts:  fig.num_parts,
-      });
     }
   } catch (e) {
-    console.warn("[sets] Minifigs fetch failed", e);
+    console.warn("[sets] Minifigs fetch failed:", e);
   }
 
+  // 4. Normalisation
   const normalizePart = (p, minifigRef = null, isSpare = false) => ({
     part_num:       p.part?.part_num || "",
-    name:           p.part?.name || "",
-    color_id:       p.color?.id ?? 0,
-    color_name:     p.color?.name || "",
+    name:           p.part?.name     || "",
+    color_id:       p.color?.id      ?? 0,
+    color_name:     p.color?.name    || "",
     img_url:        p.part?.part_img_url || "",
-    quantity:       p.quantity || 0,
+    quantity:       p.quantity       || 0,
     quantity_owned: 0,
     is_spare:       isSpare,
     is_minifig:     !!minifigRef,
-    minifig_ref:    minifigRef,   // ← nouveau : set_num de la minifig
+    minifig_ref:    minifigRef,
   });
 
   const mainParts  = parts.filter(p => !p.is_spare).map(p => normalizePart(p, null, false));
   const spareParts = parts.filter(p =>  p.is_spare).map(p => normalizePart(p, null, true));
   const minifigN   = minifigParts.map(p => normalizePart(p, p._from_minifig, false));
+
+  console.log(`Résumé: ${mainParts.length} pièces principales, ${minifigN.length} pièces minifig, ${spareParts.length} spares`);
+  console.log("Minifigs meta:", minifigsMeta);
+  console.groupEnd();
 
   return {
     number:    setInfo.set_num,
@@ -358,7 +406,7 @@ async function fetchSetFromApi(setNum) {
     num_parts: setInfo.num_parts,
     img_url:   setInfo.set_img_url || "",
     parts:     [...mainParts, ...minifigN, ...spareParts],
-    minifigs:  minifigsMeta,       // ← nouveau : méta des minifigs
+    minifigs:  minifigsMeta,
   };
 }
 
@@ -456,104 +504,133 @@ function renderPartsList() {
   if (!currentSetData) return;
   const hideCompleted = document.getElementById("hide-completed").checked;
 
-  const mainParts  = currentSetData.parts.filter(p => !p.is_spare && !p.is_minifig);
-  const minifigParts = currentSetData.parts.filter(p => !p.is_spare && p.is_minifig);
-  const spareParts = currentSetData.parts.filter(p => p.is_spare);
+  const mainParts    = currentSetData.parts.filter(p => !p.is_spare && !p.is_minifig);
+  const minifigParts = currentSetData.parts.filter(p => !p.is_spare &&  p.is_minifig);
+  const spareParts   = currentSetData.parts.filter(p =>  p.is_spare);
 
-  // Grouper les pièces de minifig par minifig_ref
+  console.log(`[renderPartsList] main=${mainParts.length} minifig=${minifigParts.length} spare=${spareParts.length}`);
+  console.log("minifigs méta:", currentSetData.minifigs);
+
+  // Grouper les pièces minifig par minifig_ref
   const minifigGroups = new Map();
   for (const p of minifigParts) {
-    const ref = p.minifig_ref || "unknown";
+    const ref = p.minifig_ref || "__unknown__";
     if (!minifigGroups.has(ref)) minifigGroups.set(ref, []);
     minifigGroups.get(ref).push(p);
   }
+  console.log("groupes minifig:", [...minifigGroups.keys()]);
 
-  // Stats de progression (pièces principales + minifigs, pas les spares)
+  // Progression (principales + minifigs, pas spares)
   const allTracked = [...mainParts, ...minifigParts];
-  const total  = allTracked.reduce((s, p) => s + p.quantity, 0);
-  const owned  = allTracked.reduce((s, p) => s + Math.min(p.quantity_owned, p.quantity), 0);
-  const pct    = total > 0 ? Math.round((owned / total) * 100) : 0;
-
+  const total = allTracked.reduce((s, p) => s + p.quantity, 0);
+  const owned = allTracked.reduce((s, p) => s + Math.min(p.quantity_owned, p.quantity), 0);
+  const pct   = total > 0 ? Math.round((owned / total) * 100) : 0;
   document.getElementById("detail-progress").style.width = pct + "%";
   document.getElementById("detail-progress-label").textContent =
     `${owned} / ${total} pièces (${pct}%)`;
 
-  // Rendu d'une ligne de pièce
+  // ── Rendu d'une ligne normale ─────────────────────────────────────────
   const renderRow = (p, isSpare = false) => {
+    if (hideCompleted && !isSpare && p.quantity_owned >= p.quantity) return "";
     const missing = p.quantity - p.quantity_owned;
     const invQty  = UnifiedDataManager.getInventoryQuantity(p.part_num, p.color_id);
     const done    = p.quantity_owned >= p.quantity;
-    if (hideCompleted && done) return "";
-    return `<tr class="${done ? "row-complete" : ""}">
-      <td><img src="${escapeHTML(p.img_url||"")}" class="part-thumb"
-           onerror="this.src='data:image/svg+xml,${encodeURIComponent(placeholderSVG())}'"/></td>
+    const esc     = s => escapeHTML(String(s));
+
+    const qtyCell = isSpare
+      ? `<td><span class="spare-qty-info">${p.quantity_owned} / ${p.quantity}</span></td>
+         <td><!-- spare : pas d'action --></td>`
+      : `<td>
+           <div class="qty-control">
+             <button class="btn-qty" onclick="changePartQty('${esc(p.part_num)}',${p.color_id},-1)">−</button>
+             <span>${p.quantity_owned}</span>
+             <button class="btn-qty" onclick="changePartQty('${esc(p.part_num)}',${p.color_id},+1)">+</button>
+           </div>
+         </td>
+         <td>${renderActionCell(p, missing, invQty)}</td>`;
+
+    return `<tr class="${done && !isSpare ? "row-complete" : ""}${isSpare ? " row-spare" : ""}">
+      <td><img src="${esc(p.img_url||"")}" class="part-thumb"
+           onerror="this.src='data:image/svg+xml,${encodeURIComponent(placeholderSVG())}'" /></td>
       <td>
-        <span class="part-num">${escapeHTML(p.part_num)}</span>
-        <span class="part-name">${escapeHTML(p.name||"")}</span>
-        ${p.is_minifig ? '<span class="badge badge-minifig">Minifig</span>' : ""}
+        <span class="part-num">${esc(p.part_num)}</span>
+        <span class="part-name">${esc(p.name||"")}</span>
+        ${isSpare ? '<span class="badge badge-spare" title="Pièce de rechange — info seulement">spare</span>' : ""}
       </td>
       <td><span class="color-chip" style="background:#${getColorHex(p.color_id)}"></span>
-          ${escapeHTML(p.color_name||String(p.color_id))}</td>
+          ${esc(p.color_name||String(p.color_id))}</td>
       <td>${p.quantity}</td>
-      <td>
-        ${isSpare
-          ? `<span style="color:#888;font-size:0.85em">${p.quantity_owned} / ${p.quantity}</span>`
-          : `<div class="qty-control">
-              <button class="btn-qty" onclick="changePartQty('${escapeHTML(p.part_num)}',${p.color_id},-1)">−</button>
-              <span>${p.quantity_owned}</span>
-              <button class="btn-qty" onclick="changePartQty('${escapeHTML(p.part_num)}',${p.color_id},+1)">+</button>
-            </div>`
-        }
-      </td>
-      <td>
-        ${!isSpare && missing > 0 && invQty > 0
-          ? `<button class="btn btn-sm btn-primary"
-                onclick="transferFromInventory('${escapeHTML(p.part_num)}',${p.color_id},${missing})">
-               Transférer (${Math.min(invQty,missing)})
-             </button>`
-          : !isSpare && missing > 0
-            ? `<span class="missing-badge">−${missing}</span>`
-            : ""
-        }
-      </td>
+      ${qtyCell}
     </tr>`;
   };
 
-  // Rendu sections principales
-  let html = renderRows(mainParts, hideCompleted);
+  // ── Cellule Action (transfert unitaire) ──────────────────────────────
+  const renderActionCell = (p, missing, invQty) => {
+    if (missing <= 0) return `<span style="color:#4caf50;font-size:1.1rem">✓</span>`;
+    const canTransfer = invQty > 0;
+    const canRemove   = p.quantity_owned > 0;
+    return `
+      <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">
+        <span class="missing-badge">−${missing}</span>
+        ${canTransfer ? `
+          <button class="btn btn-sm btn-primary" title="Transférer 1 depuis l'inventaire (${invQty} dispo)"
+                  onclick="changePartQty('${escapeHTML(p.part_num)}',${p.color_id},+1,'transfer')">
+            +1 inv. (${invQty})
+          </button>` : ""}
+        ${canRemove ? `
+          <button class="btn btn-sm btn-warning" title="Retirer 1 du set vers l'inventaire"
+                  onclick="changePartQty('${escapeHTML(p.part_num)}',${p.color_id},-1,'return')">
+            −1 → inv.
+          </button>` : ""}
+      </div>`;
+  };
 
-  // Rendu sections minifigs
-  if (minifigGroups.size > 0) {
-    for (const [ref, parts] of minifigGroups.entries()) {
-      const meta = (currentSetData.minifigs || []).find(m => m.set_num === ref);
-      const figName  = meta?.name  || ref;
-      const figImg   = meta?.img_url || "";
-      const figQty   = meta?.quantity || 1;
-
-      html += `
-        <tr>
-          <td colspan="6" style="padding:0">
-            <div class="minifig-separator">
-              ${figImg
-                ? `<img src="${escapeHTML(figImg)}" alt="${escapeHTML(figName)}"
-                        class="minifig-header-img"
-                        onerror="this.style.display='none'">`
-                : ""}
-              <div>
-                <strong>${escapeHTML(figName)}</strong>
-                <span class="badge badge-minifig">×${figQty}</span>
-              </div>
+  // ── Séparateur minifig ────────────────────────────────────────────────
+  const renderMinifigSeparator = (ref) => {
+    const meta = (currentSetData.minifigs || []).find(m => m.set_num === ref);
+    const name   = meta?.name    || ref;
+    const imgUrl = meta?.img_url || "";
+    const qty    = meta?.quantity || 1;
+    console.log(`[renderMinifigSeparator] ref=${ref} name="${name}" img="${imgUrl}"`);
+    return `
+      <tr class="minifig-separator-row">
+        <td colspan="6">
+          <div class="minifig-separator">
+            ${imgUrl
+              ? `<img src="${escapeHTML(imgUrl)}" alt="${escapeHTML(name)}"
+                      class="minifig-header-img"
+                      onerror="this.style.display='none';console.warn('Image minifig cassée:','${escapeHTML(imgUrl)}')">`
+              : `<div class="minifig-img-placeholder">🧱</div>`}
+            <div class="minifig-separator-info">
+              <strong>${escapeHTML(name)}</strong>
+              ${qty > 1 ? `<span class="badge badge-minifig">×${qty}</span>` : ""}
+              <small style="color:#888;display:block">${ref}</small>
             </div>
-          </td>
-        </tr>
-      `;
-      parts.forEach(p => { html += renderRow(p); });
+          </div>
+        </td>
+      </tr>`;
+  };
+
+  // ── Assemblage HTML ───────────────────────────────────────────────────
+  let html = mainParts.map(p => renderRow(p)).join("");
+
+  // Section minifigs
+  if (minifigGroups.size > 0) {
+    html += `<tr><td colspan="6">
+      <div style="padding:0.4rem 0.8rem;background:#e8eaf6;font-weight:600;font-size:0.8rem;letter-spacing:.05em;text-transform:uppercase;color:#3949ab;border-top:3px solid #3949ab;margin-top:0.5rem">
+        Minifigures
+      </div>
+    </td></tr>`;
+
+    for (const [ref, groupParts] of minifigGroups.entries()) {
+      html += renderMinifigSeparator(ref);
+      html += groupParts.map(p => renderRow(p)).join("");
     }
   }
 
   document.getElementById("parts-tbody").innerHTML = html;
 
-  // Pièces de rechange — affichage info seulement
+  // Section spares
   const sparesContainer = document.getElementById("spares-container");
   if (spareParts.length > 0) {
     document.getElementById("spares-tbody").innerHTML =
@@ -599,17 +676,32 @@ function renderRows(parts, hideCompleted) {
     }).join("");
 }
 
-  function changePartQty(partNum, colorId, delta) {
-    if (!currentSetData) return;
-    const part = currentSetData.parts.find(
-      p => p.part_num === partNum && p.color_id === parseInt(colorId)
-    );
-    if (!part) return;
+function changePartQty(partNum, colorId, delta, mode = "direct") {
+  if (!currentSetData) return;
+  const part = currentSetData.parts.find(
+    p => p.part_num === partNum && p.color_id === parseInt(colorId)
+  );
+  if (!part) return;
+
+  if (mode === "transfer") {
+    // Prendre 1 dans l'inventaire → mettre dans le set
+    const result = UnifiedDataManager.transferPartToSet(currentSetNumber, partNum, colorId, 1);
+    if (!result.success) { showToast(result.error, "error"); return; }
+    showToast(`1 pièce transférée depuis l'inventaire`, "success");
+  } else if (mode === "return") {
+    // Retirer 1 du set → remettre dans l'inventaire
+    const result = UnifiedDataManager.transferPartFromSet(currentSetNumber, partNum, colorId, 1);
+    if (!result.success) { showToast(result.error, "error"); return; }
+    showToast(`1 pièce retournée dans l'inventaire`, "info");
+  } else {
+    // Modification directe du compteur du set
     const newQty = Math.max(0, Math.min(part.quantity, part.quantity_owned + delta));
     UnifiedDataManager.updateSetPartQuantity(currentSetNumber, partNum, colorId, newQty);
-    currentSetData = UnifiedDataManager.getSet(currentSetNumber);
-    renderPartsList();
   }
+
+  currentSetData = UnifiedDataManager.getSet(currentSetNumber);
+  renderPartsList();
+}
 
   function completeAllParts() {
     if (!currentSetData) return;
@@ -629,16 +721,16 @@ function renderRows(parts, hideCompleted) {
     renderPartsList();
   }
 
-  function transferFromInventory(partNum, colorId, missing) {
-    const result = UnifiedDataManager.transferPartToSet(currentSetNumber, partNum, colorId, missing);
-    if (result.success) {
-      currentSetData = UnifiedDataManager.getSet(currentSetNumber);
-      renderPartsList();
-      showToast(`${result.transferred} pièce(s) transférée(s) depuis l'inventaire.`, "success");
-    } else {
-      showToast("Transfert impossible : " + result.error, "error");
-    }
+function transferFromInventory(partNum, colorId, qty) {
+  const result = UnifiedDataManager.transferPartToSet(currentSetNumber, partNum, colorId, qty);
+  if (result.success) {
+    currentSetData = UnifiedDataManager.getSet(currentSetNumber);
+    renderPartsList();
+    showToast(`${result.transferred} pièce(s) transférée(s) depuis l'inventaire.`, "success");
+  } else {
+    showToast("Transfert impossible : " + result.error, "error");
   }
+}
 
   function deleteCurrentSet() {
     if (!confirm(`Supprimer le set ${currentSetNumber} ?`)) return;

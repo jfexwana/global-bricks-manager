@@ -404,11 +404,11 @@ async function getPartImageUrl(part) {
 // Fonction pour vérifier si une pièce manque dans un set (CORRIGÉE)
 async function checkIfPartIsMissingInSets(partNum, colorId) {
   try {
-    if (!unifiedDataManager || !unifiedDataManager.currentData.sets) return false;
+    if (!UnifiedDataManager || !UnifiedDataManager.currentData.sets) return false;
     
     const missingSets = [];
     
-    for (const set of unifiedDataManager.currentData.sets) {
+    for (const set of UnifiedDataManager.currentData.sets) {
       if (set.parts && Array.isArray(set.parts)) {
         for (const part of set.parts) {
           // Utiliser la structure unifiée : part_num, color_id, quantity, quantity_owned
@@ -2249,7 +2249,7 @@ function testImageUrl(url) {
 async function changeInventoryQuantity(partNum, colorId, delta) {
   try {
     // Trouver l'item dans l'inventaire unifié par color_id
-    const inventoryItem = unifiedDataManager.currentData.inventory.find(
+    const inventoryItem = UnifiedDataManager.currentData.inventory.find(
       item => item.part_num === partNum && item.color_id == colorId
     );
     
@@ -2262,7 +2262,7 @@ async function changeInventoryQuantity(partNum, colorId, delta) {
     const newQty = Math.max(0, currentQty + delta);
     
     // Mettre à jour via le gestionnaire unifié
-    unifiedDataManager.updateInventory(
+    UnifiedDataManager.updateInventory(
       partNum, 
       colorId, 
       inventoryItem.color_name, 
@@ -2270,7 +2270,7 @@ async function changeInventoryQuantity(partNum, colorId, delta) {
       inventoryItem.category
     );
     
-    await unifiedDataManager.saveUnifiedData();
+    await UnifiedDataManager.saveUnifiedData();
     
     // Mettre à jour l'affichage
     const qtyElement = document.querySelector(`#inventory-qty-${Array.from(document.querySelectorAll('[id^="inventory-qty-"]')).findIndex(el => el.id.includes(partNum))}`);
@@ -2309,7 +2309,7 @@ async function transferToSet(partNum, colorId, setNumber, delta = 1) {
     
     // Modifier la quantité dans l'inventaire unifié
     const newQty = Math.max(0, currentQty - delta);
-    unifiedDataManager.updateInventory(
+    UnifiedDataManager.updateInventory(
       partNum, 
       colorId, 
       inventoryItem.color_name, 
@@ -2341,7 +2341,7 @@ async function transferToSet(partNum, colorId, setNumber, delta = 1) {
     }
     
     // Sauvegarder les données unifiées
-    await unifiedDataManager.saveUnifiedData();
+    await UnifiedDataManager.saveUnifiedData();
     
     // Recharger l'affichage
     showPersonalInventory();

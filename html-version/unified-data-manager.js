@@ -226,31 +226,32 @@ const UnifiedDataManager = {
 
   async saveSet(setData) {
     const idx = this.data.sets.findIndex(s => s.number === setData.number);
-    const normalized = {
-      number:    setData.number,
-      name:      setData.name || "",
-      year:      setData.year || 0,
-      num_parts: setData.num_parts || setData.numParts || 0,
-      img_url:   setData.img_url || setData.imgUrl || "",
-      parts:     (setData.parts || []).map(p => ({
-        part_num:       p.part_num || p.partNum || "",
-        color_id:       parseInt(p.color_id || p.colorId) || 0,
-        color_name:     p.color_name || p.colorName || "",
-        quantity:       p.quantity || 0,
-        quantity_owned: p.quantity_owned || p.quantityOwned || 0,
-        img_url:        p.img_url || p.imgUrl || "",
-        name:           p.name || "",
-        is_spare:       p.is_spare || false,
-        is_minifig:     p.is_minifig || false,
-      })),
-     minifigs: (setData.minifigs || []).map(m => ({
-    set_num:   m.set_num,
-    name:      m.name || "",
-    quantity:  m.quantity || 1,
-    img_url:   m.img_url || "",
+   const normalized = {
+  number:    setData.number,
+  name:      setData.name || "",
+  year:      setData.year || 0,
+  num_parts: setData.num_parts || setData.numParts || 0,
+  img_url:   setData.img_url || setData.imgUrl || "",
+  minifigs:  (setData.minifigs || []).map(m => ({  // ← AJOUT
+    set_num:   m.set_num   || "",
+    name:      m.name      || "",
+    quantity:  m.quantity  || 1,
+    img_url:   m.img_url   || "",
     num_parts: m.num_parts || 0,
-  })), 
-    };
+  })),
+  parts: (setData.parts || []).map(p => ({
+    part_num:       p.part_num       || p.partNum  || "",
+    name:           p.name           || "",
+    color_id:       parseInt(p.color_id || p.colorId) || 0,
+    color_name:     p.color_name     || p.colorName || "",
+    img_url:        p.img_url        || p.imgUrl    || "",
+    quantity:       p.quantity       || 0,
+    quantity_owned: p.quantity_owned || p.quantityOwned || 0,
+    is_spare:       p.is_spare       || false,
+    is_minifig:     p.is_minifig     || false,
+    minifig_ref:    p.minifig_ref    || null,  // ← AJOUT
+  })),
+};
     if (idx >= 0) this.data.sets[idx] = normalized;
     else          this.data.sets.push(normalized);
     this.save();
