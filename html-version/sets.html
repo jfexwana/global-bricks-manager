@@ -4,6 +4,7 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Global Bricks Manager — Mes Sets</title>
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="styles.css"/>
 </head>
 <body>
@@ -130,14 +131,16 @@
   let currentSetData   = null;
 
   // ── Init ──────────────────────────────────────────────────────────────────
-  function init() {
-    applyTheme();
-    renderSetsGrid();
-    updateGlobalStats();
-    // Bouton dark mode dans header
-    const ha = document.getElementById("header-actions");
-    ha.innerHTML = `<button class="btn btn-secondary btn-sm" onclick="toggleDarkMode()">🌙</button>`;
-  }
+function init() {
+  // Thème géré par theme.js (appliqué automatiquement)
+  renderSetsGrid();
+  updateGlobalStats();
+  const ha = document.getElementById("header-actions");
+  ha.innerHTML = `
+    <button class="btn btn-secondary btn-sm theme-toggle-btn" title="Changer le thème">🌙</button>
+    <a href="settings.html" class="btn btn-secondary btn-sm" title="Paramètres">⚙️</a>
+  `;
+}
 
   // ── Recherche de set ──────────────────────────────────────────────────────
   let searchTimeout = null;
@@ -336,33 +339,36 @@ async function fetchSetFromApi(setNum) {
     for (const fig of figs) {
       await sleep(API_DELAY_MS);
 
-      // Image de la minifig — souvent absente dans la liste, on appelle l'endpoint dédié
+      // Toujours appeler l'endpoint dédié — c'est la seule source fiable
+      // pour le nom complet ET l'image de la minifig.
+      let figName   = fig.set_name || fig.set_num;
       let figImgUrl = fig.set_img_url || "";
-      if (!figImgUrl) {
-        try {
-          console.log(`  → Image pour ${fig.set_num}…`);
-          const figResp = await fetch(
-            `${REBRICKABLE_API}/minifigs/${fig.set_num}/`, { headers }
-          );
-          if (figResp.ok) {
-            const figData = await figResp.json();
-            figImgUrl = figData.set_img_url || "";
-            console.log(`  ✓ Image ${fig.set_num}:`, figImgUrl || "(aucune)");
-          }
-          await sleep(API_DELAY_MS);
-        } catch (e) {
-          console.warn(`  ✗ Erreur image minifig ${fig.set_num}:`, e.message);
+
+      try {
+        console.log(`  → Métadonnées complètes pour ${fig.set_num}…`);
+        const figResp = await fetch(
+          `${REBRICKABLE_API}/minifigs/${fig.set_num}/`, { headers }
+        );
+        if (figResp.ok) {
+          const figData = await figResp.json();
+          // Priorité à l'endpoint dédié pour nom et image (plus fiables)
+          figName   = figData.name       || figName;
+          figImgUrl = figData.set_img_url || figImgUrl;
+          console.log(`  ✓ ${fig.set_num}: name="${figName}" img="${figImgUrl || '(aucune)'}"`);
         }
+        await sleep(API_DELAY_MS);
+      } catch (e) {
+        console.warn(`  ✗ Erreur métadonnées minifig ${fig.set_num}:`, e.message);
       }
 
       minifigsMeta.push({
         set_num:   fig.set_num,
-        name:      fig.set_name || fig.set_num,
+        name:      figName,
         quantity:  fig.quantity || 1,
         img_url:   figImgUrl,
         num_parts: fig.num_parts || 0,
       });
-      console.log(`  Minifig enregistrée:`, fig.set_num, fig.set_name, `img=${figImgUrl||"(aucune)"}`);
+      console.log(`  Minifig enregistrée: ${fig.set_num} / "${figName}" / img=${figImgUrl || "(aucune)"}`);
 
       // Pièces de cette minifig
       console.log(`  → Pièces de ${fig.set_num}…`);
@@ -370,6 +376,7 @@ async function fetchSetFromApi(setNum) {
         `${REBRICKABLE_API}/minifigs/${fig.set_num}/parts/`, headers
       );
       console.log(`  ✓ ${figParts.length} pièces pour ${fig.set_num}`);
+      // Attacher la référence minifig à chaque pièce
       figParts.forEach(p => { p._from_minifig = fig.set_num; });
       minifigParts.push(...figParts);
     }
@@ -409,19 +416,6 @@ async function fetchSetFromApi(setNum) {
     minifigs:  minifigsMeta,
   };
 }
-
-  async function fetchAllPages(baseUrl, headers) {
-    let results = [];
-    let url     = baseUrl + (baseUrl.includes("?") ? "&" : "?") + "page_size=100";
-    while (url) {
-      const resp = await fetch(url, { headers });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status} pour ${url}`);
-      const data = await resp.json();
-      results.push(...(data.results || []));
-      url = data.next || null;
-    }
-    return results;
-  }
 
   // ── Fallback IndexedDB ────────────────────────────────────────────────────
 
@@ -687,14 +681,21 @@ function changePartQty(partNum, colorId, delta, mode = "direct") {
     // Prendre 1 dans l'inventaire → mettre dans le set
     const result = UnifiedDataManager.transferPartToSet(currentSetNumber, partNum, colorId, 1);
     if (!result.success) { showToast(result.error, "error"); return; }
-    showToast(`1 pièce transférée depuis l'inventaire`, "success");
+    showToast(`+1 transféré depuis l'inventaire`, "success");
+
   } else if (mode === "return") {
     // Retirer 1 du set → remettre dans l'inventaire
+    // Guard : on ne peut retirer que si quantity_owned > 0
+    if (part.quantity_owned <= 0) {
+      showToast("Aucune pièce possédée à retourner.", "info");
+      return;
+    }
     const result = UnifiedDataManager.transferPartFromSet(currentSetNumber, partNum, colorId, 1);
     if (!result.success) { showToast(result.error, "error"); return; }
-    showToast(`1 pièce retournée dans l'inventaire`, "info");
+    showToast(`−1 retourné dans l'inventaire`, "info");
+
   } else {
-    // Modification directe du compteur du set
+    // Modification directe du compteur
     const newQty = Math.max(0, Math.min(part.quantity, part.quantity_owned + delta));
     UnifiedDataManager.updateSetPartQuantity(currentSetNumber, partNum, colorId, newQty);
   }

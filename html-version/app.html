@@ -6,6 +6,7 @@
   <title>Tri Pièces LEGO (Bulk Mode - IndexedDB)</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="styles.css">
+  <script src="theme.js"></script>
 </head>
 <body>
   <div class="container">
@@ -660,36 +661,42 @@ function filterParts(parts, filters, printFilterValue) {
     async function showCategories() {
       const app = document.getElementById('app');
       
-      app.innerHTML = `
-        <div class="update-section">
-          <h3>Données IndexedDB</h3>
-          <p>Données stockées localement dans votre navigateur</p>
-          <button class="btn btn-warning" onclick="goToMainMenu()">Retour au menu</button>
-          <button class="btn" onclick="showPersonalInventory()">📦 Mon Inventaire</button>
-        </div>
+app.innerHTML = `
+  <div class="update-section" style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap">
+    <h3 style="margin:0;flex:1">Données IndexedDB</h3>
+    <button class="btn btn-warning btn-sm" onclick="goToMainMenu()">← Menu</button>
+    <button class="btn btn-secondary btn-sm" onclick="showPersonalInventory()">📦 Mon Inventaire</button>
+    <a href="settings.html" class="btn btn-secondary btn-sm">⚙️</a>
+    <button class="btn btn-secondary btn-sm theme-toggle-btn">🌙</button>
+  </div>
 
-<div style="background: #f0f8ff; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2196f3;">
-  <h3>Recherche globale dans les catégories</h3>
-  <div style="display: flex; gap: 10px; align-items: center;">
-    <input type="text" id="global-search" placeholder="Recherche par mots-clés (ex: brick AND red, slope OR curved, NOT print)" 
-           style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 1em;">
-    <button onclick="executeGlobalSearch()" style="background: #2196f3; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; white-space: nowrap;">
-      Rechercher
-    </button>
-  </div>
-  <div style="margin-top: 10px; font-size: 0.9em; color: #666;">
-    <strong>Opérateurs :</strong> AND, OR, NOT - Utilisez des guillemets pour les phrases exactes "brick 2x4"
-  </div>
-  
-  <!-- Zone des filtres temporaires globaux -->
-  <div id="global-temporary-filters" style="margin-top: 15px;"></div>
-</div>
+  <div style="background: #f0f8ff; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2196f3;">
+    <h3>Recherche globale dans les catégories</h3>
+    <div style="display: flex; gap: 10px; align-items: center;">
+      <input type="text" id="global-search" placeholder="Recherche par mots-clés (ex: brick AND red, slope OR curved, NOT print)"
+             style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 1em;">
+      <button onclick="executeGlobalSearch()" style="background: #2196f3; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; white-space: nowrap;">
+        Rechercher
+      </button>
     </div>
+    <div style="margin-top: 10px; font-size: 0.9em; color: #666;">
+      <strong>Opérateurs :</strong> AND, OR, NOT — guillemets pour les phrases exactes "brick 2x4"
+    </div>
+    <div id="global-temporary-filters" style="margin-top: 15px;"></div>
+  </div>
 
-        <h2>Choisissez une catégorie de pièces :</h2>
-        <div class="loading">Chargement des catégories...</div>
-        <div class="grid" id="categories-grid" style="display: none;"></div>
-      `;
+  <h2>Choisissez une catégorie de pièces :</h2>
+  <div class="loading">Chargement des catégories...</div>
+  <div class="grid" id="categories-grid" style="display: none;"></div>
+`;
+// Après avoir injecté ce HTML, theme.js va auto-init les boutons .theme-toggle-btn
+// via DOMContentLoaded — mais comme le DOM est déjà chargé à ce stade,
+// appeler manuellement :
+document.querySelectorAll('.theme-toggle-btn').forEach(btn => {
+  const theme = GBMTheme.get();
+  btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+  btn.addEventListener('click', () => GBMTheme.toggle());
+});
 
       try {
         const categories = await getLocalCategories();
@@ -2006,27 +2013,34 @@ await UnifiedDataManager.saveUnifiedData();
 // Fonction optimisée pour le transfert vers un set
 async function transferToSetOptimized(partNum, colorId, setNumber, delta, rowIndex) {
   try {
+    let result;
+
     if (delta > 0) {
-      const result = UnifiedDataManager.transferPartToSet(setNumber, partNum, colorId, 1);
+      // Transférer depuis l'inventaire vers le set
+      result = UnifiedDataManager.transferPartToSet(setNumber, partNum, colorId, 1);
       if (result.success) {
-        showToast(`${result.transferred} pièce(s) transférée(s) vers le set ${setNumber}`, 'success');
+        showToast(`+1 transférée vers le set ${setNumber}`, 'success');
       } else {
         showToast(result.error, 'error');
         return;
       }
     } else {
-      const result = UnifiedDataManager.transferPartFromSet(setNumber, partNum, colorId, 1);
+      // Retirer du set vers l'inventaire
+      result = UnifiedDataManager.transferPartFromSet(setNumber, partNum, colorId, 1);
       if (result.success) {
-        showToast(`${result.returned} pièce(s) retirée(s) du set ${setNumber}`, 'info');
+        showToast(`−1 retournée dans l'inventaire depuis ${setNumber}`, 'info');
       } else {
         showToast(result.error, 'error');
         return;
       }
     }
+
+    // Mettre à jour l'affichage de la ligne sans recharger toute la page
     updateMissingInfoDisplay(partNum, colorId, setNumber, rowIndex);
+
   } catch (error) {
     console.error('Erreur transfert:', error);
-    showToast('Erreur lors du transfert: ' + error.message, 'error');
+    showToast('Erreur lors du transfert : ' + error.message, 'error');
   }
 }
 

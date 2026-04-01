@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Global Bricks Manager — Paramètres</title>
+  <link rel="stylesheet" href="styles.css"/>
+  <script src="theme.js"></script>
+</head>
+<body>
+  <div class="container">
+    <header class="app-header">
+      <a href="menu.html" class="btn btn-back">← Menu</a>
+      <h1>Paramètres</h1>
+      <button class="btn btn-secondary btn-sm theme-toggle-btn" title="Changer le thème">🌙</button>
+    </header>
+
+    <!-- ── Clé API ─────────────────────────────────────────────────────── -->
+    <div class="card" id="card-api">
+      <h2>Clé API Rebrickable</h2>
+      <p class="text-secondary">Nécessaire pour récupérer les données des sets et minifigures.
+        <a href="https://rebrickable.com/api/" target="_blank" rel="noopener">Obtenir une clé →</a>
+      </p>
+      <div class="input-row">
+        <input type="password" id="api-key-input" placeholder="Entrez votre clé API Rebrickable" autocomplete="off"/>
+        <button class="btn btn-sm" id="api-key-toggle" onclick="toggleApiKeyVisibility()">👁</button>
+      </div>
+      <div id="api-status" class="status status-disconnected" style="margin-top:0.5rem">Non configurée</div>
+      <div class="btn-row" style="margin-top:0.75rem">
+        <button class="btn btn-primary" onclick="saveApiKey()">Enregistrer la clé</button>
+        <button class="btn btn-danger btn-sm" onclick="clearApiKey()">Effacer</button>
+      </div>
+    </div>
+
+    <!-- ── Thème ───────────────────────────────────────────────────────── -->
+    <div class="card">
+      <h2>Apparence</h2>
+      <div class="setting-row">
+        <div>
+          <strong>Mode sombre</strong>
+          <p class="text-secondary" style="margin:0">S'applique sur toutes les pages de l'application.</p>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="dark-mode-toggle" onchange="onDarkModeToggle(this.checked)"/>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- ── Base de données locale ──────────────────────────────────────── -->
+    <div class="card" id="db-status-card">
+      <h2>Base de données LEGO locale</h2>
+      <p class="text-secondary">Catalogue des pièces, couleurs et catégories stocké dans votre navigateur (IndexedDB).</p>
+      <div id="db-status-grid" class="status-grid">
+        <div class="status-item"><span class="status-label">Version</span><span id="stat-version" class="status-value">—</span></div>
+        <div class="status-item"><span class="status-label">Pièces</span><span id="stat-parts" class="status-value">—</span></div>
+        <div class="status-item"><span class="status-label">Couleurs</span><span id="stat-colors" class="status-value">—</span></div>
+        <div class="status-item"><span class="status-label">Inv. pièces</span><span id="stat-inv-parts" class="status-value">—</span></div>
+        <div class="status-item"><span class="status-label">Catégories</span><span id="stat-categories" class="status-value">—</span></div>
+        <div class="status-item"><span class="status-label">Dernier import</span><span id="stat-last-import" class="status-value">—</span></div>
+      </div>
+
+      <!-- Vérification mise à jour -->
+      <div style="margin-top:1rem">
+        <div id="update-status"><span id="update-message" class="update-message">—</span></div>
+        <div id="update-details" class="update-details" style="display:none">
+          <table class="update-table">
+            <tr><th></th><th>Local</th><th>Distant</th></tr>
+            <tr><td>Version</td><td id="upd-local-version">—</td><td id="upd-remote-version">—</td></tr>
+            <tr><td>Généré le</td><td id="upd-local-date">—</td><td id="upd-remote-date">—</td></tr>
+            <tr><td>Taille</td><td>—</td><td id="upd-remote-size">—</td></tr>
+          </table>
+        </div>
+        <div class="btn-row" style="margin-top:0.75rem">
+          <button id="btn-check-update" class="btn btn-secondary" onclick="checkUpdate()">Vérifier les mises à jour</button>
+          <button id="btn-download" class="btn btn-primary" onclick="startDownload()" style="display:none">Télécharger et importer</button>
+          <button id="btn-force-reimport" class="btn btn-warning" onclick="forceReimport()">Forcer le ré-import</button>
+        </div>
+      </div>
+
+      <!-- Barre de progression -->
+      <div id="progress-card" style="display:none; margin-top:1rem">
+        <p style="font-weight:600">Import en cours…</p>
+        <div class="progress-bar-container">
+          <div id="progress-bar" class="progress-bar" style="width:0%"></div>
+        </div>
+        <p id="progress-label" class="progress-label">Initialisation…</p>
+      </div>
+
+      <div class="card card-danger" style="margin-top:1rem; margin-bottom:0">
+        <h3 style="margin-top:0">Zone danger — Catalogue</h3>
+        <p class="text-secondary">Efface le catalogue local (pièces, couleurs, catégories). Votre inventaire et vos sets ne sont pas affectés.</p>
+        <button class="btn btn-danger btn-sm" onclick="clearCatalog()">Effacer le catalogue</button>
+      </div>
+    </div>
+
+    <!-- ── Sauvegarde données personnelles ────────────────────────────── -->
+    <div class="card">
+      <h2>Sauvegarde des données personnelles</h2>
+      <p class="text-secondary">Vos sets et votre inventaire en vrac sont stockés localement dans votre navigateur.
+        Exportez régulièrement pour éviter toute perte.</p>
+      <div id="personal-data-info" class="status-grid" style="margin-bottom:1rem">
+        <div class="status-item"><span class="status-label">Sets</span><span id="pstat-sets" class="status-value">—</span></div>
+        <div class="status-item"><span class="status-label">Pièces en vrac</span><span id="pstat-inv" class="status-value">—</span></div>
+        <div class="status-item"><span class="status-label">Dernière sauvegarde</span><span id="pstat-ts" class="status-value">—</span></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="exportPersonalData()">📥 Exporter JSON</button>
+        <label class="btn btn-secondary" style="cursor:pointer">
+          📤 Importer JSON
+          <input type="file" accept=".json" style="display:none" onchange="importPersonalData(this)"/>
+        </label>
+      </div>
+
+      <div class="card card-danger" style="margin-top:1rem; margin-bottom:0">
+        <h3 style="margin-top:0">Zone danger — Données personnelles</h3>
+        <p class="text-secondary">Efface définitivement votre inventaire et vos sets. Cette action est irréversible.</p>
+        <button class="btn btn-danger btn-sm" onclick="clearPersonalData()">Effacer toutes les données personnelles</button>
+      </div>
+    </div>
+
+  </div><!-- /container -->
+
+  <script src="lego-db.js"></script>
+  <script src="unified-data-manager.js"></script>
+  <script>
+  // ── Init ────────────────────────────────────────────────────────────────
+  async function init() {
+    loadApiKeyUI();
+    loadPersonalStats();
+    initDarkModeToggle();
+    await refreshDbStats();
+    await checkUpdate();
+  }
+
+  // ── Clé API ──────────────────────────────────────────────────────────────
+  function loadApiKeyUI() {
+    const key = UnifiedDataManager.getApiKey();
+    const input  = document.getElementById('api-key-input');
+    const status = document.getElementById('api-status');
+    if (key) {
+      input.value       = key;
+      status.textContent = 'Configurée ✓';
+      status.className   = 'status status-connected';
+    } else {
+      status.textContent = 'Non configurée';
+      status.className   = 'status status-disconnected';
+    }
+  }
+
+  function saveApiKey() {
+    const key = document.getElementById('api-key-input').value.trim();
+    const status = document.getElementById('api-status');
+    if (!key) { alert('Veuillez entrer une clé API valide.'); return; }
+    UnifiedDataManager.setApiKey(key);
+    status.textContent = 'Configurée ✓';
+    status.className   = 'status status-connected';
+    showToast('Clé API enregistrée.', 'success');
+  }
+
+  function clearApiKey() {
+    if (!confirm('Effacer la clé API ?')) return;
+    UnifiedDataManager.setApiKey('');
+    localStorage.removeItem('rebrickable_api_key');
+    document.getElementById('api-key-input').value = '';
+    const status = document.getElementById('api-status');
+    status.textContent = 'Non configurée';
+    status.className   = 'status status-disconnected';
+    showToast('Clé API effacée.', 'info');
+  }
+
+  function toggleApiKeyVisibility() {
+    const input = document.getElementById('api-key-input');
+    input.type = input.type === 'password' ? 'text' : 'password';
+  }
+
+  // ── Dark mode ────────────────────────────────────────────────────────────
+  function initDarkModeToggle() {
+    const cb = document.getElementById('dark-mode-toggle');
+    cb.checked = GBMTheme.get() === 'dark';
+  }
+
+  function onDarkModeToggle(checked) {
+    const theme = checked ? 'dark' : 'light';
+    GBMTheme.save(theme);
+    GBMTheme.apply(theme);
+    // Sync bouton header
+    document.querySelectorAll('.theme-toggle-btn').forEach(btn => {
+      btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+    });
+    showToast(`Mode ${theme === 'dark' ? 'sombre' : 'clair'} activé.`, 'info');
+  }
+
+  // ── Stats données personnelles ───────────────────────────────────────────
+  function loadPersonalStats() {
+    const stats = UnifiedDataManager.getStats();
+    const ts    = UnifiedDataManager.data.timestamp;
+    document.getElementById('pstat-sets').textContent = stats.totalSets;
+    document.getElementById('pstat-inv').textContent  = stats.totalInventory + ' réf. (' + stats.totalOwnedParts + ' pièces)';
+    document.getElementById('pstat-ts').textContent   = ts ? new Date(ts).toLocaleString('fr-FR') : 'Jamais';
+  }
+
+  // ── Stats catalogue IndexedDB ────────────────────────────────────────────
+  async function refreshDbStats() {
+    const stats      = await LegoDb.getStats();
+    const lastImport = await LegoDb.getLastImport();
+    const version    = await LegoDb.getDbVersion();
+    document.getElementById('stat-version').textContent    = version || 'Non installée';
+    document.getElementById('stat-parts').textContent      = stats ? stats.parts.toLocaleString() : '—';
+    document.getElementById('stat-colors').textContent     = stats ? stats.colors.toLocaleString() : '—';
+    document.getElementById('stat-inv-parts').textContent  = stats ? stats.inventory_parts.toLocaleString() : '—';
+    document.getElementById('stat-categories').textContent = stats ? stats.categories.toLocaleString() : '—';
+    document.getElementById('stat-last-import').textContent =
+      lastImport ? new Date(lastImport).toLocaleString('fr-FR') : 'Jamais';
+  }
+
+  // ── Vérification mise à jour ─────────────────────────────────────────────
+  async function checkUpdate() {
+    document.getElementById('update-message').textContent = 'Vérification en cours…';
+    document.getElementById('update-details').style.display = 'none';
+    document.getElementById('btn-download').style.display   = 'none';
+
+    const { needsUpdate, remote, local } = await LegoDb.checkForUpdate();
+    const msgEl = document.getElementById('update-message');
+
+    if (remote === null) {
+      msgEl.textContent = '⚠️ Impossible de contacter le serveur.';
+      msgEl.className   = 'update-message warning';
+      return;
+    }
+
+    document.getElementById('update-details').style.display     = 'block';
+    document.getElementById('upd-local-version').textContent    = local || '—';
+    document.getElementById('upd-remote-version').textContent   = remote.version;
+    document.getElementById('upd-local-date').textContent       =
+      (await LegoDb.getMeta?.('db_generated_at') || '—');
+    document.getElementById('upd-remote-date').textContent      =
+      new Date(remote.generated_at).toLocaleString('fr-FR');
+    document.getElementById('upd-remote-size').textContent      =
+      remote.size_gz ? `${(remote.size_gz / 1_000_000).toFixed(1)} MB` : '—';
+
+    if (needsUpdate) {
+      msgEl.textContent = '🔄 Une nouvelle version est disponible.';
+      msgEl.className   = 'update-message info pulse';
+      document.getElementById('btn-download').style.display = 'inline-block';
+    } else {
+      msgEl.textContent = '✅ Base à jour.';
+      msgEl.className   = 'update-message success';
+    }
+  }
+
+  async function startDownload() {
+    const btnD  = document.getElementById('btn-download');
+    const btnC  = document.getElementById('btn-check-update');
+    const btnF  = document.getElementById('btn-force-reimport');
+    const prog  = document.getElementById('progress-card');
+    btnD.disabled = btnC.disabled = btnF.disabled = true;
+    prog.style.display = 'block';
+
+    try {
+      await LegoDb.downloadAndImport((step, pct) => {
+        document.getElementById('progress-bar').style.width = pct + '%';
+        const labels = { download:'Téléchargement…', decompress:'Décompression…', parse:'Analyse JSON…', import:'Import…', done:'Terminé !' };
+        const base = Object.keys(labels).find(k => step.startsWith(k));
+        document.getElementById('progress-label').textContent = labels[base] || step;
+      });
+      showToast('✅ Base de données mise à jour !', 'success');
+      await refreshDbStats();
+    } catch (e) {
+      showToast('❌ Erreur import : ' + e.message, 'error');
+    } finally {
+      prog.style.display = 'none';
+      document.getElementById('progress-bar').style.width = '0%';
+      btnD.disabled = btnC.disabled = btnF.disabled = false;
+      await checkUpdate();
+    }
+  }
+
+  function forceReimport() {
+    if (!confirm('Forcer un ré-import complet du catalogue ?')) return;
+    document.getElementById('btn-download').style.display = 'inline-block';
+    startDownload();
+  }
+
+  async function clearCatalog() {
+    if (!confirm('Effacer le catalogue local ? (Votre inventaire et vos sets ne sont pas supprimés)')) return;
+    await LegoDb.clearCatalog();
+    await refreshDbStats();
+    showToast('Catalogue effacé.', 'info');
+    await checkUpdate();
+  }
+
+  // ── Export / Import données personnelles ─────────────────────────────────
+  function exportPersonalData() {
+    const json = UnifiedDataManager.exportData();
+    const blob = new Blob([json], { type: 'application/json' });
+    const a    = document.createElement('a');
+    a.href     = URL.createObjectURL(blob);
+    a.download = `gbm_backup_${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+  }
+
+  function importPersonalData(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        const sets = data.sets?.length ?? '?';
+        const inv  = data.inventory?.length ?? '?';
+        if (!confirm(`Importer ${sets} set(s) et ${inv} référence(s) ?\nCela remplacera vos données actuelles.`)) return;
+        UnifiedDataManager.importData(e.target.result);
+        loadPersonalStats();
+        showToast('Import réussi.', 'success');
+      } catch (err) {
+        showToast('Erreur import : ' + err.message, 'error');
+      }
+    };
+    reader.readAsText(file);
+    input.value = '';
+  }
+
+  function clearPersonalData() {
+    if (!confirm('⚠️ Cette action effacera définitivement tous vos sets et votre inventaire.\nElle est IRRÉVERSIBLE. Continuer ?')) return;
+    if (!confirm('Dernière confirmation : effacer toutes les données personnelles ?')) return;
+    localStorage.removeItem('gbm_unified_v2');
+    UnifiedDataManager.load(); // recharge avec données vides
+    loadPersonalStats();
+    showToast('Données personnelles effacées.', 'info');
+  }
+
+  // ── Toast ────────────────────────────────────────────────────────────────
+  function showToast(msg, type = 'info') {
+    const t = document.createElement('div');
+    t.className = `toast toast-${type}`;
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.classList.add('show'), 10);
+    setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 400); }, 4000);
+  }
+
+  init();
+  </script>
+
+  <style>
+  .app-header { display:flex; align-items:center; gap:1rem; margin-bottom:1.5rem; }
+  .app-header h1 { flex:1; margin:0; }
+  .input-row { display:flex; gap:0.5rem; align-items:center; }
+  .input-row input { flex:1; }
+  .setting-row { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:0.5rem 0; }
+
+  /* Toggle switch */
+  .toggle-switch { position:relative; display:inline-block; width:48px; height:26px; flex-shrink:0; }
+  .toggle-switch input { opacity:0; width:0; height:0; }
+  .toggle-slider { position:absolute; cursor:pointer; inset:0; background:#ccc; border-radius:26px; transition:.3s; }
+  .toggle-slider:before { position:absolute; content:""; height:20px; width:20px; left:3px; bottom:3px; background:white; border-radius:50%; transition:.3s; }
+  input:checked + .toggle-slider { background:#1976d2; }
+  input:checked + .toggle-slider:before { transform:translateX(22px); }
+
+  .card { background:#fff; border-radius:10px; padding:1.25rem; margin-bottom:1.25rem; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+  .dark .card { background:rgba(40,40,40,0.95); box-shadow:0 1px 4px rgba(0,0,0,0.3); }
+  </style>
+</body>
+</html>

@@ -1,7 +1,8 @@
 /**
  * unified-data-manager.js  —  Global Bricks Manager
  * Gestion centralisée des données utilisateur (inventaire + sets).
- * v2.2 — corrections paramètres updateInventory, ajout scheduleSave, getApiKey statique
+ * v2.3 — clé localStorage harmonisée, getApiKey sans récursion,
+ *         syncThème, ordre paramètres updateInventory stabilisé.
  */
 
 const STORAGE_KEY    = "gbm_unified_v2";
@@ -10,7 +11,7 @@ const STORAGE_KEY_S1 = "lego_sets_data";
 
 function emptyData() {
   return {
-    version:   "2.2",
+    version:   "2.3",
     timestamp: new Date().toISOString(),
     user: {
       preferences: {
@@ -29,7 +30,7 @@ function loadUnifiedData() {
   if (raw) {
     try {
       const data = JSON.parse(raw);
-      return migrateTo22(data);
+      return migrateTo23(data);
     } catch (e) {
       console.error("[UDM] Données corrompues, reset", e);
     }
@@ -51,13 +52,15 @@ function saveUnifiedData(data) {
   }
 }
 
-function migrateTo22(data) {
-  if (data.version === "2.2") return data;
-  data.version = "2.2";
+function migrateTo23(data) {
+  // Accepte 2.2 et 2.3
+  if (data.version === "2.3") return data;
+  data.version = "2.3";
   (data.sets || []).forEach(s => {
     if (!s.year)      s.year      = 0;
     if (!s.img_url)   s.img_url   = "";
     if (!s.num_parts) s.num_parts = 0;
+    if (!s.minifigs)  s.minifigs  = [];
   });
   return data;
 }
@@ -92,6 +95,7 @@ function migrateFromLegacy() {
         year:      s.year || 0,
         num_parts: s.num_parts || 0,
         img_url:   s.img_url || "",
+        minifigs:  [],
         parts:     (s.parts || []).map(p => ({
           part_num:       p.part_num || p.partNum || "",
           color_id:       parseInt(p.color_id || p.colorId) || 0,
@@ -99,6 +103,7 @@ function migrateFromLegacy() {
           quantity_owned: p.quantity_owned || p.quantityOwned || 0,
           is_spare:       p.is_spare || false,
           is_minifig:     p.is_minifig || false,
+          minifig_ref:    p.minifig_ref || null,
         })),
       })) : [];
     } catch (e) { console.warn("[UDM] Migration sets échouée", e); }
@@ -120,7 +125,6 @@ const UnifiedDataManager = {
     return this._data;
   },
 
-  // Alias pour compatibilité avec app.html (appelé comme méthode d'instance)
   loadUnifiedData() {
     return Promise.resolve(this.load());
   },
@@ -130,12 +134,10 @@ const UnifiedDataManager = {
     saveUnifiedData(this._data);
   },
 
-  // Alias pour compatibilité avec app.html
   saveUnifiedData() {
     return Promise.resolve(this.save());
   },
 
-  // Sauvegarde différée (debounce 500ms) — évite les sauvegardes trop fréquentes
   scheduleSave() {
     if (this._saveTimer) clearTimeout(this._saveTimer);
     this._saveTimer = setTimeout(() => {
@@ -149,7 +151,6 @@ const UnifiedDataManager = {
     return this._data;
   },
 
-  // Compatibilité avec app.html qui accède à .currentData
   get currentData() {
     return this.data;
   },
@@ -165,14 +166,16 @@ const UnifiedDataManager = {
     this.save();
   },
 
-  // Méthode d'instance
+  // ── Clé API ────────────────────────────────────────────────────────────────
+  // NOTE : getApiKey est défini comme méthode régulière (pas d'Object.defineProperty)
+  // pour éviter la récursion infinie de la v2.2.
+
   getApiKey() {
-    return this.data.user.preferences.apiKey
+    return (this._data?.user?.preferences?.apiKey)
       || localStorage.getItem("rebrickable_api_key")
       || "";
   },
 
-  // Méthode statique (pour sets.html qui l'appelle en UnifiedDataManager.getApiKey())
   setApiKey(key) {
     this.data.user.preferences.apiKey = key;
     localStorage.setItem("rebrickable_api_key", key);
@@ -180,6 +183,7 @@ const UnifiedDataManager = {
   },
 
   // ── Inventaire pièces en vrac ──────────────────────────────────────────────
+  // Ordre : (partNum, colorId, quantity, colorName, category)
 
   getInventoryQuantity(partNum, colorId) {
     const item = this.data.inventory.find(
@@ -188,18 +192,17 @@ const UnifiedDataManager = {
     return item ? item.quantity : 0;
   },
 
-  // Ordre unifié : (partNum, colorId, quantity, colorName, category)
-  // app.html appelait (partNum, colorId, colorName, quantity, category) — corrigé côté app.html
   updateInventory(partNum, colorId, quantity, colorName = "", category = "") {
+    const cid = parseInt(colorId);
     const idx = this.data.inventory.findIndex(
-      i => i.part_num === partNum && i.color_id === parseInt(colorId)
+      i => i.part_num === partNum && i.color_id === cid
     );
     if (quantity <= 0) {
       if (idx >= 0) this.data.inventory.splice(idx, 1);
     } else {
       const item = {
         part_num:   partNum,
-        color_id:   parseInt(colorId),
+        color_id:   cid,
         color_name: colorName,
         quantity,
         category,
@@ -226,32 +229,32 @@ const UnifiedDataManager = {
 
   async saveSet(setData) {
     const idx = this.data.sets.findIndex(s => s.number === setData.number);
-   const normalized = {
-  number:    setData.number,
-  name:      setData.name || "",
-  year:      setData.year || 0,
-  num_parts: setData.num_parts || setData.numParts || 0,
-  img_url:   setData.img_url || setData.imgUrl || "",
-  minifigs:  (setData.minifigs || []).map(m => ({  // ← AJOUT
-    set_num:   m.set_num   || "",
-    name:      m.name      || "",
-    quantity:  m.quantity  || 1,
-    img_url:   m.img_url   || "",
-    num_parts: m.num_parts || 0,
-  })),
-  parts: (setData.parts || []).map(p => ({
-    part_num:       p.part_num       || p.partNum  || "",
-    name:           p.name           || "",
-    color_id:       parseInt(p.color_id || p.colorId) || 0,
-    color_name:     p.color_name     || p.colorName || "",
-    img_url:        p.img_url        || p.imgUrl    || "",
-    quantity:       p.quantity       || 0,
-    quantity_owned: p.quantity_owned || p.quantityOwned || 0,
-    is_spare:       p.is_spare       || false,
-    is_minifig:     p.is_minifig     || false,
-    minifig_ref:    p.minifig_ref    || null,  // ← AJOUT
-  })),
-};
+    const normalized = {
+      number:    setData.number,
+      name:      setData.name || "",
+      year:      setData.year || 0,
+      num_parts: setData.num_parts || setData.numParts || 0,
+      img_url:   setData.img_url || setData.imgUrl || "",
+      minifigs:  (setData.minifigs || []).map(m => ({
+        set_num:   m.set_num   || "",
+        name:      m.name      || "",
+        quantity:  m.quantity  || 1,
+        img_url:   m.img_url   || "",
+        num_parts: m.num_parts || 0,
+      })),
+      parts: (setData.parts || []).map(p => ({
+        part_num:       p.part_num       || p.partNum  || "",
+        name:           p.name           || "",
+        color_id:       parseInt(p.color_id || p.colorId) || 0,
+        color_name:     p.color_name     || p.colorName || "",
+        img_url:        p.img_url        || p.imgUrl    || "",
+        quantity:       p.quantity       || 0,
+        quantity_owned: p.quantity_owned || p.quantityOwned || 0,
+        is_spare:       p.is_spare       || false,
+        is_minifig:     p.is_minifig     || false,
+        minifig_ref:    p.minifig_ref    || null,
+      })),
+    };
     if (idx >= 0) this.data.sets[idx] = normalized;
     else          this.data.sets.push(normalized);
     this.save();
@@ -302,7 +305,7 @@ const UnifiedDataManager = {
     if (transfer <= 0) return { success: false, error: "Aucun transfert nécessaire" };
 
     const available = this.getInventoryQuantity(partNum, colorIdInt);
-    if (available < transfer) return { success: false, error: "Inventaire insuffisant" };
+    if (available < transfer) return { success: false, error: `Inventaire insuffisant (${available} dispo, ${transfer} requis)` };
 
     this.updateInventory(
       partNum, colorIdInt,
@@ -326,7 +329,7 @@ const UnifiedDataManager = {
     if (!part) return { success: false, error: "Pièce introuvable dans le set" };
 
     const transfer = Math.min(qtyToReturn, part.quantity_owned);
-    if (transfer <= 0) return { success: false, error: "Aucune pièce à retourner" };
+    if (transfer <= 0) return { success: false, error: "Aucune pièce à retourner (quantité possédée = 0)" };
 
     part.quantity_owned -= transfer;
     const current = this.getInventoryQuantity(partNum, colorIdInt);
@@ -346,11 +349,11 @@ const UnifiedDataManager = {
     const sets      = this.data.sets;
     const inventory = this.data.inventory;
     const completeSets = sets.filter(s => {
-      if (!s.parts.length) return false;
-      return s.parts.every(p => p.quantity_owned >= p.quantity);
+      const tracked = s.parts.filter(p => !p.is_spare);
+      if (!tracked.length) return false;
+      return tracked.every(p => p.quantity_owned >= p.quantity);
     });
     const totalOwnedParts = inventory.reduce((sum, i) => sum + i.quantity, 0);
-
     return {
       totalSets:      sets.length,
       completeSets:   completeSets.length,
@@ -376,31 +379,11 @@ const UnifiedDataManager = {
     if (!parsed.inventory || !parsed.sets) {
       throw new Error("Format non reconnu (clés inventory et sets requises)");
     }
-    this._data = migrateTo22(parsed);
+    this._data = migrateTo23(parsed);
     this.save();
     return this._data;
   },
 };
-
-// Méthode statique sur le constructeur (pour sets.html : UnifiedDataManager.getApiKey())
-UnifiedDataManager.getApiKey = function() {
-  return UnifiedDataManager.getApiKey
-    ? (UnifiedDataManager._data?.user?.preferences?.apiKey
-       || localStorage.getItem("rebrickable_api_key")
-       || "")
-    : "";
-};
-// Réécrire proprement pour éviter la récursion
-Object.defineProperty(UnifiedDataManager, 'getApiKey', {
-  value: function() {
-    const data = UnifiedDataManager._data;
-    return (data?.user?.preferences?.apiKey)
-      || localStorage.getItem("rebrickable_api_key")
-      || "";
-  },
-  writable: true,
-  configurable: true,
-});
 
 UnifiedDataManager.load();
 window.UnifiedDataManager = UnifiedDataManager;

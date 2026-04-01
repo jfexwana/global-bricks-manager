@@ -3,140 +3,217 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Menu Principal - Gestion LEGO</title>
+  <title>Global Bricks Manager</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
-
-<script src="unified-data-manager.js"></script>
-<script>
-  document.addEventListener('DOMContentLoaded', async function() {
-
-    // Import dynamique de auth.js (ES module)
-    const { default: LocalStorageManager } = await import('./auth.js');
-
-    class UnifiedStorageManager extends LocalStorageManager {
-      constructor(container) {
-        super(container);
-      }
-
-      exportToFile() {
-        try {
-          const json = UnifiedDataManager.exportData();
-          const blob = new Blob([json], { type: 'application/json' });
-          const url  = URL.createObjectURL(blob);
-          const a    = document.createElement('a');
-          a.href     = url;
-          a.download = `lego_backup_${new Date().toISOString().slice(0, 10)}.json`;
-          a.click();
-          URL.revokeObjectURL(url);
-        } catch (error) {
-          console.error('Erreur export:', error);
-          alert('Erreur lors de l\'export des données');
-        }
-      }
-
-      async importFromFile(event) {
-        const file = event.target.files[0];
-        if (!file) return;
-        try {
-          const text = await file.text();
-          if (confirm('Voulez-vous vraiment importer ces données ? Cela remplacera vos données actuelles.')) {
-            UnifiedDataManager.importData(text);
-            alert('Données importées avec succès ! Rechargez la page pour voir les changements.');
-          }
-        } catch (error) {
-          console.error('Erreur lors de l\'import:', error);
-          alert('Erreur lors de l\'import : fichier invalide');
-        }
-        event.target.value = '';
-      }
-    }
-
-    // Initialiser la section stockage
-    const storageContainer = document.getElementById('storage-container');
-    if (storageContainer) {
-      new UnifiedStorageManager(storageContainer);
-    }
-
-    // Initialiser la section API
-    updateUIFromStoredData();
-  });
-
-  function updateUIFromStoredData() {
-    const apiKeyInput = document.getElementById('api-key');
-    const apiStatus   = document.getElementById('api-status');
-    if (apiKeyInput && apiStatus) {
-      const savedApiKey = UnifiedDataManager.getApiKey();
-      if (savedApiKey) {
-        apiKeyInput.value     = savedApiKey;
-        apiStatus.textContent = 'Configurée';
-        apiStatus.className   = 'status status-connected';
-      }
-    }
-  }
-
-  function saveApiKey() {
-    const apiKeyInput = document.getElementById('api-key');
-    const apiStatus   = document.getElementById('api-status');
-    if (!apiKeyInput || !apiStatus) {
-      alert('Erreur: éléments d\'interface non trouvés');
-      return;
-    }
-    const apiKey = apiKeyInput.value.trim();
-    if (apiKey) {
-      UnifiedDataManager.setApiKey(apiKey);
-      apiStatus.textContent = 'Configurée';
-      apiStatus.className   = 'status status-connected';
-      alert('Clé API enregistrée avec succès!');
-    } else {
-      alert('Veuillez entrer une clé API valide');
-    }
-  }
-
-  window.saveApiKey      = saveApiKey;
-  window.goToBulkParts   = () => { window.location.href = 'app.html'; };
-  window.goToSets        = () => { window.location.href = 'sets.html'; };
-  window.goToFileManager = () => { window.location.href = 'index.html'; };
-</script>
-
-  <style>
-
-  </style>
+  <!-- theme.js en premier pour éviter le flash -->
+  <script src="theme.js"></script>
 </head>
 <body>
   <div class="container">
-    <h1>Menu Principal - Gestion LEGO</h1>
-    
-    <div class="api-section">
-      <h3>Clé API Rebrickable</h3>
-      <div id="api-status" class="status status-disconnected">Non configurée</div>
-      <input type="text" id="api-key" placeholder="Entrez votre clé API Rebrickable">
-      <button class="btn btn-api" onclick="saveApiKey()">Enregistrer la clé API</button>
-    </div>
-    
-    <div class="storage-section">
-      <h3>Sauvegarde & Export</h3>
-      <div id="storage-container"></div>
-    </div>
-    
-    <div class="menu-options">
-      <div class="menu-card" onclick="goToBulkParts()">
-        <div class="menu-title">Mes Pièces en Vrac</div>
-        <div class="menu-description">Accédez à votre inventaire de pièces LEGO en vrac, triez par catégories et gérez vos quantités.</div>
-        <button class="btn">Ouvrir</button>
+
+    <header class="menu-header">
+      <div class="menu-logo">
+        <span class="menu-logo-icon">🧱</span>
+        <div>
+          <h1>Global Bricks Manager</h1>
+          <p id="menu-subtitle" class="text-secondary" style="margin:0">Chargement…</p>
+        </div>
       </div>
-      
-      <div class="menu-card" onclick="goToSets()">
-        <div class="menu-title">Mes Sets</div>
-        <div class="menu-description">Gérez vos sets LEGO complets, suivez votre collection et vos projets de construction.</div>
-        <button class="btn">Ouvrir</button>
+      <button class="btn btn-secondary btn-sm theme-toggle-btn" title="Changer le thème">🌙</button>
+    </header>
+
+    <!-- Alerte si pas de clé API -->
+    <div id="api-warning" class="alert-banner" style="display:none">
+      ⚠️ Clé API Rebrickable non configurée — les données des sets ne pourront pas être récupérées.
+      <a href="settings.html">Configurer →</a>
+    </div>
+
+    <!-- Alerte si base de données vide -->
+    <div id="db-warning" class="alert-banner alert-banner-orange" style="display:none">
+      📦 Base de données locale vide — certaines fonctions seront limitées.
+      <a href="settings.html">Importer →</a>
+    </div>
+
+    <!-- Cartes principales -->
+    <div class="menu-cards">
+
+      <div class="menu-card-main" onclick="window.location.href='sets.html'">
+        <div class="menu-card-icon">📦</div>
+        <div class="menu-card-body">
+          <div class="menu-card-title">Mes Sets</div>
+          <div class="menu-card-desc">Gérez vos sets LEGO, suivez la complétion pièce par pièce, transférez depuis votre inventaire.</div>
+          <div id="stat-sets" class="menu-card-stat">—</div>
+        </div>
+        <span class="menu-card-arrow">→</span>
       </div>
+
+      <div class="menu-card-main" onclick="window.location.href='app.html'">
+        <div class="menu-card-icon">🗂️</div>
+        <div class="menu-card-body">
+          <div class="menu-card-title">Mes Pièces en Vrac</div>
+          <div class="menu-card-desc">Parcourez les catégories, comptez et gérez vos pièces LEGO non assemblées.</div>
+          <div id="stat-inv" class="menu-card-stat">—</div>
+        </div>
+        <span class="menu-card-arrow">→</span>
+      </div>
+
+      <div class="menu-card-main menu-card-settings" onclick="window.location.href='settings.html'">
+        <div class="menu-card-icon">⚙️</div>
+        <div class="menu-card-body">
+          <div class="menu-card-title">Paramètres</div>
+          <div class="menu-card-desc">Clé API Rebrickable, thème, base de données locale, sauvegarde & import des données.</div>
+        </div>
+        <span class="menu-card-arrow">→</span>
+      </div>
+
     </div>
-    
-    <div style="text-align: center; margin-top: 30px;">
-      <button class="btn btn-back" onclick="goToFileManager()">Retour à la gestion des fichiers</button>
+
+    <!-- Pièces manquantes cross-sets (résumé rapide) -->
+    <div id="missing-summary-card" class="card" style="display:none">
+      <h3 style="margin-top:0">⚠️ Pièces manquantes</h3>
+      <div id="missing-summary-content"></div>
+      <a href="sets.html" class="btn btn-sm btn-secondary" style="margin-top:0.5rem">Voir dans Mes Sets →</a>
     </div>
-  </div>
+
+  </div><!-- /container -->
+
+  <script src="unified-data-manager.js"></script>
+  <script src="lego-db.js"></script>
+  <script>
+  document.addEventListener('DOMContentLoaded', async function () {
+
+    // ── Statistiques personnelles ──────────────────────────────────────────
+    const stats = UnifiedDataManager.getStats();
+    document.getElementById('stat-sets').textContent =
+      stats.totalSets
+        ? `${stats.totalSets} set(s) · ${stats.completeSets} complet(s) · ${stats.incompleteSets} incomplet(s)`
+        : 'Aucun set enregistré';
+
+    document.getElementById('stat-inv').textContent =
+      stats.totalInventory
+        ? `${stats.totalInventory} référence(s) · ${stats.totalOwnedParts} pièce(s)`
+        : 'Inventaire vide';
+
+    document.getElementById('menu-subtitle').textContent =
+      stats.totalSets || stats.totalInventory
+        ? `${stats.totalSets} set(s) · ${stats.totalOwnedParts} pièce(s) en vrac`
+        : 'Aucune donnée — commencez par ajouter un set !';
+
+    // ── Alertes ───────────────────────────────────────────────────────────
+    if (!UnifiedDataManager.getApiKey()) {
+      document.getElementById('api-warning').style.display = 'block';
+    }
+
+    const dbReady = await LegoDb.isReady().catch(() => false);
+    if (!dbReady) {
+      document.getElementById('db-warning').style.display = 'block';
+    }
+
+    // ── Résumé pièces manquantes ──────────────────────────────────────────
+    const sets = UnifiedDataManager.getSets();
+    const incompleteSets = sets.filter(s =>
+      s.parts.some(p => !p.is_spare && p.quantity_owned < p.quantity)
+    );
+    if (incompleteSets.length > 0) {
+      const card    = document.getElementById('missing-summary-card');
+      const content = document.getElementById('missing-summary-content');
+      card.style.display = 'block';
+      content.innerHTML = incompleteSets.slice(0, 5).map(s => {
+        const missing = s.parts.filter(p => !p.is_spare && p.quantity_owned < p.quantity).length;
+        return `<div class="missing-summary-row">
+          <img src="${escapeHTML(s.img_url)}" class="missing-summary-img" onerror="this.style.display='none'">
+          <span><strong>${escapeHTML(s.number)}</strong> ${escapeHTML(s.name)}</span>
+          <span class="missing-badge">${missing} pièce(s) manquante(s)</span>
+        </div>`;
+      }).join('');
+      if (incompleteSets.length > 5) {
+        content.innerHTML += `<p class="text-secondary" style="margin-top:0.5rem">…et ${incompleteSets.length - 5} autre(s) set(s).</p>`;
+      }
+    }
+  });
+
+  function escapeHTML(s) {
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  </script>
+
+  <style>
+  .menu-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid rgba(0,0,0,0.08);
+  }
+  .dark .menu-header { border-color: rgba(255,255,255,0.08); }
+  .menu-logo { display:flex; align-items:center; gap:0.75rem; }
+  .menu-logo-icon { font-size: 2rem; }
+  .menu-logo h1 { margin:0; font-size:1.4rem; }
+
+  .alert-banner {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 8px;
+    padding: 0.6rem 1rem;
+    margin-bottom: 1rem;
+    font-size: 0.88rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .alert-banner a { margin-left: auto; font-weight: 600; color: #d84315; }
+  .alert-banner-orange { background:#fff3e0; border-color:#ff9800; }
+  .dark .alert-banner { background: rgba(255,193,7,.12); border-color: rgba(255,193,7,.3); color:#ffe; }
+
+  .menu-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    margin-bottom: 1.25rem;
+  }
+  .menu-card-main {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    background: #fff;
+    border: 1px solid rgba(0,0,0,0.09);
+    border-radius: 12px;
+    padding: 1.1rem 1.25rem;
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .menu-card-main:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,0.12); border-color: #1976d2; }
+  .menu-card-settings:hover { border-color: #888; }
+  .dark .menu-card-main { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1); }
+  .dark .menu-card-main:hover { border-color: #90caf9; }
+
+  .menu-card-icon { font-size: 2rem; flex-shrink: 0; width: 48px; text-align: center; }
+  .menu-card-body { flex: 1; }
+  .menu-card-title { font-weight: 700; font-size: 1.05rem; margin-bottom: 0.2rem; }
+  .menu-card-desc { font-size: 0.85rem; color: #666; line-height: 1.4; }
+  .dark .menu-card-desc { color: #aaa; }
+  .menu-card-stat { font-size: 0.8rem; color: #1976d2; margin-top: 0.3rem; font-weight: 500; }
+  .dark .menu-card-stat { color: #90caf9; }
+  .menu-card-arrow { font-size: 1.2rem; color: #ccc; flex-shrink: 0; }
+
+  .missing-summary-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+    font-size: 0.88rem;
+  }
+  .dark .missing-summary-row { border-color: rgba(255,255,255,0.06); }
+  .missing-summary-img { width:36px; height:36px; object-fit:contain; flex-shrink:0; }
+  .missing-summary-row span:nth-child(3) { margin-left:auto; }
+
+  .card { background:#fff; border-radius:10px; padding:1.25rem; margin-bottom:1.25rem; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+  .dark .card { background:rgba(40,40,40,0.95); }
+  </style>
 </body>
 </html>
